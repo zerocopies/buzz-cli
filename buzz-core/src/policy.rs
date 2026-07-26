@@ -1,0 +1,148 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Providers {
+    pub groq_api_key: Option<String>,
+    pub anthropic_api_key: Option<String>,
+    pub gemini_api_key: Option<String>,
+    pub hf_api_key: Option<String>,
+    #[serde(default)]
+    pub groq: String,
+    #[serde(default)]
+    pub anthropic: String,
+    #[serde(default)]
+    pub gemini: String,
+    #[serde(default)]
+    pub hf: String,
+}
+
+impl Default for Providers {
+    fn default() -> Self {
+        Self {
+            groq_api_key: None,
+            anthropic_api_key: None,
+            gemini_api_key: None,
+            hf_api_key: None,
+            groq: String::new(),
+            anthropic: String::new(),
+            gemini: String::new(),
+            hf: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingConfig {
+    pub always_local_if_sensitive: bool,
+    pub cloud_fallback_order: Vec<String>,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            always_local_if_sensitive: true,
+            cloud_fallback_order: vec!["groq".to_string()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostConfig {
+    pub max_per_request_usd: f64,
+    pub daily_budget_usd: f64,
+}
+
+impl Default for CostConfig {
+    fn default() -> Self {
+        Self {
+            max_per_request_usd: 0.01,
+            daily_budget_usd: 5.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalConfig {
+    pub model_path: String,
+    pub model_name: String,
+    pub max_context_size: usize,
+}
+
+impl Default for LocalConfig {
+    fn default() -> Self {
+        Self {
+            model_path: "~/.buzz/models/qwen2.5-1.5b-instruct-q4_k_m.gguf".to_string(),
+            model_name: "qwen2.5-1.5b-instruct".to_string(),
+            max_context_size: 4096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditConfig {
+    pub enabled: bool,
+    pub log_path: String,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            log_path: "~/.buzz/audit.jsonl".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub groq_api_key: Option<String>,
+    pub anthropic_api_key: Option<String>,
+    pub gemini_api_key: Option<String>,
+    pub hf_api_key: Option<String>,
+    pub budget_limit: Option<f64>,
+    pub default_provider: Option<String>,
+    pub providers: Providers,
+    pub routing: RoutingConfig,
+    pub cost: CostConfig,
+    pub local: LocalConfig,
+    pub audit: AuditConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            groq_api_key: None,
+            anthropic_api_key: None,
+            gemini_api_key: None,
+            hf_api_key: None,
+            budget_limit: Some(10.0),
+            default_provider: Some("groq".to_string()),
+            providers: Providers::default(),
+            routing: RoutingConfig::default(),
+            cost: CostConfig::default(),
+            local: LocalConfig::default(),
+            audit: AuditConfig::default(),
+        }
+    }
+}
+
+impl Config {
+    pub fn load_from_file(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(path)?;
+        Ok(toml::from_str(&content)?)
+    }
+
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string(self)?;
+        std::fs::write(path, content)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
+}
