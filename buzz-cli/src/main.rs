@@ -1,5 +1,4 @@
 mod providers;
-mod tui;
 
 use clap::Parser;
 use std::io::Write;
@@ -18,14 +17,7 @@ use providers::{AnthropicProvider, GeminiProvider, GroqProvider, HuggingFaceProv
     about = "Multi-provider AI CLI with privacy-first local routing"
 )]
 struct Cli {
-    #[arg(required_unless_present_any = ["chat", "tui", "setup"])]
     prompt: Option<String>,
-
-    #[arg(long, short)]
-    chat: bool,
-
-    #[arg(long)]
-    tui: bool,
 
     #[arg(long)]
     setup: bool,
@@ -46,10 +38,11 @@ const LOCAL_MODEL_PATH: &str = "/home/prp/qfz3/ai_playground/qwen2.5-coder-1.5b-
 fn run_local(
     prompt: &str,
     engine: &mut Option<qfz3::Engine>,
+    model_path: &str,
     mut on_token: impl FnMut(&str),
 ) -> Result<(String, usize, f64), Box<dyn Error>> {
     if engine.is_none() {
-        *engine = Some(qfz3::Engine::load(LOCAL_MODEL_PATH, 4096, None)?);
+        *engine = Some(qfz3::Engine::load(model_path, 4096, None)?);
     }
     let eng = engine.as_mut().unwrap();
     let out = eng.generate_streaming(prompt, 512, |piece| on_token(piece))
@@ -59,7 +52,7 @@ fn run_local(
 
 /// Bridge an async cloud provider through the existing runtime; empty key -> error.
 fn block_cloud(
-    rt: &tokio::runtime::Runtime,
+    rt: &tokio::runtime::Handle,
     key: &str,
     key_name: &str,
     call: impl std::future::Future<Output = Result<(String, u64, f64), Box<dyn Error + Send + Sync>>>,
@@ -86,10 +79,10 @@ fn execute_provider(
     prompt: &str,
     engine: &mut Option<qfz3::Engine>,
     config: &Config,
-    rt: &tokio::runtime::Runtime,
+    rt: &tokio::runtime::Handle,
 ) -> Result<(String, usize, f64), Box<dyn Error>> {
     match provider {
-        "local" => run_local(prompt, engine, |_| {}),
+        "local" => run_local(prompt, engine, &config.local.model_path, |_| {}),
         "groq" => { let k = config.providers.groq.clone();
             block_cloud(rt, &k, "groq_api_key", GroqProvider::new(k.clone(), None).generate(prompt)) }
         "anthropic" => { let k = config.providers.anthropic.clone();
@@ -121,7 +114,7 @@ async fn execute_provider_oneshot(
     }
     match provider {
         "local" => {
-            let mut eng = qfz3::Engine::load(LOCAL_MODEL_PATH, 4096, None)?;
+            let mut eng = qfz3::Engine::load(&core_cfg.local.model_path, 4096, None)?;
             let (c, t) = eng.generate_sync(prompt, 512)?;
             Ok((c, t as usize, 0.0))
         }
@@ -172,7 +165,6 @@ fn sanitize_terminal_text(s: &str) -> String {
         .collect()
 }
 
-use crate::tui::ui::render;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
@@ -181,18 +173,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_setup_wizard();
     }
 
-    if cli.tui || cli.chat {
-        let provider = select_provider_name(&cli.provider);
-        return run_tui_mode(&provider, cli.show_routing);
-    }
-
     if let Some(prompt) = cli.prompt {
         let rt = tokio::runtime::Runtime::new()?;
         return rt.block_on(run_smart_cli(&prompt, cli.show_routing));
     }
 
-    print_banner();
-    Ok(())
+    let provider = select_provider_name(&cli.provider);
+    run_tui_mode(&provider, cli.show_routing)
 }
 
 fn print_banner() {
@@ -201,9 +188,9 @@ fn print_banner() {
     println!("{}", "=".repeat(50));
     println!("\n  Usage:");
     println!("    buzz \"prompt\"         Send prompt via smart router");
-    println!("    buzz --chat            Interactive TUI");
-    println!("    buzz --setup           Configure API keys");
-    println!("    buzz --help            Show help\n");
+    println!("    buzz                    Interactive chat");
+    println!("    buzz --setup            Configure API keys");
+    println!("    buzz --help             Show help\n");
 }
 
 fn run_setup_wizard() -> Result<(), Box<dyn Error>> {
@@ -300,201 +287,143 @@ enum AsyncEvent {
 }
 
 fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<dyn Error>> {
-    use crossterm::{
-        event::{DisableMouseCapture, EnableMouseCapture},
-        execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    };
-    use ratatui::backend::CrosstermBackend;
-    use ratatui::Terminal;
-    use tui::event::{poll_event, InputEvent};
-    use tui::app::App;
-
     install_panic_restore();
-    // Rust does not run Drop on a signal exit — SIGINT (Ctrl+C) kills the
-    // process immediately, bypassing TerminalGuard. Restore explicitly here.
-    let _ = ctrlc::set_handler(|| {
-        restore_terminal();
-        std::process::exit(130);
-    });
-    enable_raw_mode()?;
-    let _guard = TerminalGuard;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
 
     let config = get_config().unwrap_or_default();
-    let mut app = App::new(config.cost.daily_budget_usd, "local");
+    println!("Buzz — type a message, /settings, /provider <name>, /reset, or /quit\n");
 
-    app.add_system("Smart router and providers initialized. Type a message to begin.");
-
-    // Persistent local engine: built on first local request, reused thereafter.
     let mut local_engine: Option<qfz3::Engine> = None;
-    // Set by /provider <name>; consumed by the next message only, then cleared
-    // so auto-routing (Sentinel/decide_route) resumes on the message after.
     let mut provider_override: Option<String> = None;
+    let mut total_tokens: u64 = 0;
+    let mut total_spend: f64 = 0.0;
 
     let rt = tokio::runtime::Runtime::new()?;
+    let rt_handle = rt.handle().clone();
 
     loop {
-        terminal.draw(|frame| {
-            tui::ui::render(frame, &app);
-        })?;
+        print!("> ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            break;
+        }
+        let input = line.trim().to_string();
+        if input.is_empty() { continue; }
 
-        if let Some(event) = poll_event(50)? {
-            match event {
-                InputEvent::Char(ch) => {
-                    if app.is_generating { continue; }
-                    if app.input_buffer.is_empty() && ch == '/' {
-                        app.push_char('/');
-                        continue;
-                    }
-                    app.push_char(ch);
-                }
-                InputEvent::Backspace => {
-                    if !app.is_generating { app.backspace(); }
-                }
-                InputEvent::Delete => {
-                    if !app.is_generating && app.cursor_position < app.input_chars() {
-                        app.input_buffer.remove(app.cursor_position);
-                    }
-                }
-                InputEvent::CursorLeft => {
-                    if app.cursor_position > 0 { app.cursor_position -= 1; }
-                }
-                InputEvent::CursorRight => {
-                    if app.cursor_position < app.input_chars() { app.cursor_position += 1; }
-                }
-                InputEvent::ScrollUp => {
-                    if !app.is_generating && app.scroll_offset > 0 {
-                        app.scroll_offset -= 1;
-                    }
-                }
-                InputEvent::ScrollDown => {
-                    if !app.is_generating && app.scroll_offset < app.messages.len().saturating_sub(1) {
-                        app.scroll_offset += 1;
-                    }
-                }
-                InputEvent::Help => {
-                    if app.input_buffer.is_empty() {
-                        app.show_help = !app.show_help;
-                    } else {
-                        app.push_char('/');
-                    }
-                }
-                InputEvent::Submit => {
-                    let input = app.input_buffer.clone();
-                    if input.is_empty() || app.is_generating { continue; }
-
-                    if input.trim().starts_with('/') {
-                        let cmd = input.trim();
-                        app.clear_input();
-
-                        if cmd == "/quit" || cmd == "/exit" {
-                            app.quit();
-                            continue;
-                        }
-                        if cmd == "/help" {
-                            app.show_help = !app.show_help;
-                            continue;
-                        }
-                        if cmd == "/reset" {
-                            if let Some(eng) = local_engine.as_mut() { eng.reset(); }
-                            app.messages.clear();
-                            app.current_spend_usd = 0.0;
-                            app.total_tokens = 0;
-                            app.scroll_offset = 0;
-                            app.add_system("Conversation reset.");
-                            continue;
-                        }
-                        if cmd == "/stats" {
-                            app.add_system(&format!(
-                                "Stats: {} messages | {} tokens | ${:.6} spent",
-                                app.messages.len(),
-                                app.total_tokens,
-                                app.current_spend_usd
-                            ));
-                            continue;
-                        }
-                        if cmd.starts_with("/provider ") {
-                            let parts: Vec<&str> = cmd.split_whitespace().collect();
-                            if parts.len() > 1 {
-                                let new_p = parts[1].to_lowercase();
-                                match new_p.as_str() {
-                                    "local" | "groq" | "anthropic" | "gemini" | "huggingface" | "hf" => {
-                                        let picked = if new_p == "hf" { "huggingface".to_string() } else { new_p };
-                                        app.provider_name = picked.clone();
-                                        provider_override = Some(picked.clone());
-                                        app.add_system(&format!("Next message only will use: {} (auto-routing resumes after)", picked));
-                                    }
-                                    _ => {
-                                        app.add_error(&format!("Unknown provider: {}. Use groq|anthropic|gemini|hf", parts[1]));
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
-                        app.add_error(&format!("Unknown command: {}", cmd));
-                        continue;
-                    }
-
-                    // Regular prompt
-                    app.add_user(&input);
-                    app.clear_input();
-                    app.start_generation();
-
-                    let (provider, route_reason) = if let Some(p) = provider_override.take() {
-                        let r = format!("manual override: /provider {p}");
-                        (p, r)
-                    } else {
-                        let route = decide_route(&input, &config.routing);
-                        let p = match route.provider {
-                            RouteProvider::Groq => "groq",
-                            RouteProvider::Anthropic => "anthropic",
-                            RouteProvider::Gemini => "gemini",
-                            RouteProvider::HuggingFace => "huggingface",
-                            RouteProvider::Local => "local",
-                        }.to_string();
-                        (p, route.reason)
-                    };
-                    
-                    // Spawn async task to avoid blocking TUI
-                    terminal.draw(|f| render(f, &app))?;
-                    let result = execute_provider(&provider, &input, &mut local_engine, &config, &rt);
-
-                    match result {
-                        Ok((content, tokens, cost)) => {
-                            app.end_generation(tokens as u64, cost);
-                            app.add_system(&format!("[{}] {}", provider, route_reason));
-                            app.add_assistant(&provider, &sanitize_terminal_text(&content));
-                        }
-                        Err(e) => {
-                            app.is_generating = false;
-                            app.gen_start = None;
-                            app.add_error(&sanitize_terminal_text(&format!("{}", e)));
-                        }
-                    }
-
-                    app.scroll_offset = app.messages.len().saturating_sub(1);
-                }
-                InputEvent::Quit => app.quit(),
+        if input == "/quit" || input == "/exit" {
+            break;
+        }
+        if input == "/reset" {
+            if let Some(eng) = local_engine.as_mut() { eng.reset(); }
+            total_tokens = 0;
+            total_spend = 0.0;
+            println!("Conversation reset.\\n");
+            continue;
+        }
+        if input == "/stats" {
+            println!("Stats: {total_tokens} tokens | ${total_spend:.6} spent\\n");
+            continue;
+        }
+        if input == "/settings" || input == "/setup" {
+            let cur = get_config().unwrap_or_default();
+            let mask = |s: &str| if s.is_empty() { "(not set)".to_string() }
+                else { format!("set ({} chars)", s.len()) };
+            println!(
+                "Settings — groq: {} | anthropic: {} | gemini: {} | hf: {} | model: {} | budget: ${:.2}",
+                mask(&cur.providers.groq), mask(&cur.providers.anthropic),
+                mask(&cur.providers.gemini), mask(&cur.providers.hf),
+                cur.local.model_path, cur.cost.daily_budget_usd
+            );
+            println!("Change with: /settings <groq|anthropic|gemini|hf|model|budget> <value>\\n");
+            continue;
+        }
+        if let Some(rest) = input.strip_prefix("/settings ") {
+            let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+            if parts.len() < 2 {
+                println!("Usage: /settings <groq|anthropic|gemini|hf|model|budget> <value>\\n");
+                continue;
             }
+            let key = parts[0].to_lowercase();
+            let value = parts[1].trim();
+            let mut cur = get_config().unwrap_or_default();
+            let result: Result<String, String> = match key.as_str() {
+                "groq" => { cur.providers.groq = value.to_string(); Ok("groq key updated".to_string()) }
+                "anthropic" => { cur.providers.anthropic = value.to_string(); Ok("anthropic key updated".to_string()) }
+                "gemini" => { cur.providers.gemini = value.to_string(); Ok("gemini key updated".to_string()) }
+                "hf" | "huggingface" => { cur.providers.hf = value.to_string(); Ok("huggingface key updated".to_string()) }
+                "model" => { cur.local.model_path = value.to_string(); Ok(format!("local model path set to: {value}")) }
+                "budget" => match value.parse::<f64>() {
+                    Ok(n) => { cur.cost.daily_budget_usd = n; Ok(format!("daily budget set to ${n:.2}")) }
+                    Err(_) => Err(format!("invalid budget value: {value}")),
+                },
+                other => Err(format!("Unknown setting: {other}. Use groq|anthropic|gemini|hf|model|budget")),
+            };
+            match result {
+                Ok(msg) => match save_config(&cur) {
+                    Ok(_) => println!("{msg}\\n"),
+                    Err(e) => println!("Failed to save settings: {e}\\n"),
+                },
+                Err(e) => println!("{e}\\n"),
+            }
+            continue;
+        }
+        if let Some(rest) = input.strip_prefix("/provider ") {
+            let new_p = rest.trim().to_lowercase();
+            match new_p.as_str() {
+                "local" | "groq" | "anthropic" | "gemini" | "huggingface" | "hf" => {
+                    let picked = if new_p == "hf" { "huggingface".to_string() } else { new_p };
+                    provider_override = Some(picked.clone());
+                    println!("Next message only will use: {picked} (auto-routing resumes after)\\n");
+                }
+                _ => println!("Unknown provider: {rest}. Use groq|anthropic|gemini|hf|local\\n"),
+            }
+            continue;
         }
 
-        if !app.is_running {
-            break;
+        let (provider, route_reason) = if let Some(p) = provider_override.take() {
+            let r = format!("manual override: /provider {p}");
+            (p, r)
+        } else {
+            let route = decide_route(&input, &config.routing);
+            let p = match route.provider {
+                RouteProvider::Groq => "groq",
+                RouteProvider::Anthropic => "anthropic",
+                RouteProvider::Gemini => "gemini",
+                RouteProvider::HuggingFace => "huggingface",
+                RouteProvider::Local => "local",
+            }.to_string();
+            (p, route.reason)
+        };
+        println!("[{provider}] {route_reason}");
+
+        let result = if provider == "local" {
+            let mut out = std::io::stdout();
+            run_local(&input, &mut local_engine, &config.local.model_path, |piece| {
+                print!("{piece}");
+                let _ = out.flush();
+            })
+        } else {
+            execute_provider(&provider, &input, &mut local_engine, &config, &rt_handle)
+        };
+
+        match result {
+            Ok((content, tokens, cost)) => {
+                if provider != "local" {
+                    println!("{}", sanitize_terminal_text(&content));
+                }
+                println!();
+                total_tokens += tokens as u64;
+                total_spend += cost;
+                println!("({tokens} tokens · ${cost:.6} this reply · {total_tokens} tokens · ${total_spend:.6} total)\n");
+            }
+            Err(e) => {
+                println!("Error: {}\\n", sanitize_terminal_text(&format!("{e}")));
+            }
         }
     }
 
-    terminal.clear()?;
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
-
-    println!("\n  Buzz CLI — Session Summary");
-    println!("  Tokens: {} | Spent: ${:.6}\n", app.total_tokens, app.current_spend_usd);
+    println!("\\n  Buzz — Session Summary");
+    println!("  Tokens: {total_tokens} | Spent: ${total_spend:.6}\\n");
 
     Ok(())
 }
@@ -556,6 +485,7 @@ fn get_config() -> Result<Config, Box<dyn Error>> {
                 "hf_api_key" => config.providers.hf = val.trim().trim_matches('"').to_string(),
                 "huggingface_api_key" => config.providers.hf = val.trim().trim_matches('"').to_string(),
                 "daily_budget_usd" => config.cost.daily_budget_usd = val.trim().parse().unwrap_or(5.0),
+                "model_path" => config.local.model_path = val.trim().trim_matches('"').to_string(),
                 _ => {}
             }
         }
