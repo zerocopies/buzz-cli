@@ -4,8 +4,6 @@ use clap::Parser;
 use std::io::Write;
 use buzz_core::policy::Config;
 use std::error::Error;
-use std::env;
-use tokio::sync::mpsc;
 
 use buzz_core::{decide_route, RouteProvider};
 use providers::{AnthropicProvider, GeminiProvider, GroqProvider, HuggingFaceProvider};
@@ -30,7 +28,6 @@ struct Cli {
 }
 
 
-const LOCAL_MODEL_PATH: &str = "/home/prp/qfz3/ai_playground/qwen2.5-coder-1.5b-q4_K_M.gguf";
 
 /// Run the local qfz3 engine, loading it once on first use and reusing it (and
 /// its KV cache / turn counter) for the rest of the session — this is what makes
@@ -67,11 +64,6 @@ fn block_cloud(
 }
 
 /// Events sent from the background generation thread back to the main loop.
-enum StreamEvent {
-    Piece(String),
-    Done { tokens: usize, cost: f64 },
-    Error(String),
-}
 
 /// TUI dispatch: local on-device, cloud via runtime. Selected by provider name.
 fn execute_provider(
@@ -142,12 +134,6 @@ fn restore_terminal() {
 
 /// Drop guard: restores the terminal on early `?` returns and unwinds,
 /// not just the happy-path teardown at the end of run_tui_mode.
-struct TerminalGuard;
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        restore_terminal();
-    }
-}
 
 fn install_panic_restore() {
     let prev = std::panic::take_hook();
@@ -182,16 +168,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     run_tui_mode(&provider, cli.show_routing)
 }
 
-fn print_banner() {
-    println!("\n{}", "=".repeat(50));
-    println!("  Buzz CLI v0.1.0");
-    println!("{}", "=".repeat(50));
-    println!("\n  Usage:");
-    println!("    buzz \"prompt\"         Send prompt via smart router");
-    println!("    buzz                    Interactive chat");
-    println!("    buzz --setup            Configure API keys");
-    println!("    buzz --help             Show help\n");
-}
 
 fn run_setup_wizard() -> Result<(), Box<dyn Error>> {
     println!("\n{}", "=".repeat(50));
@@ -281,10 +257,6 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
     Ok(())
 }
 
-enum AsyncEvent {
-    GenerationComplete(String, u64, f64),
-    GenerationError(String),
-}
 
 fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<dyn Error>> {
     install_panic_restore();
