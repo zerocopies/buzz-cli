@@ -19,6 +19,7 @@ impl GroqProvider {
         }
     }
 
+    #[allow(dead_code)] // reserved for a future "test API key" command
     pub async fn test_connection(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let response = self.client
             .post(GROQ_ENDPOINT)

@@ -268,6 +268,10 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
     let mut provider_override: Option<String> = None;
     let mut total_tokens: u64 = 0;
     let mut total_spend: f64 = 0.0;
+    // Exact-match reply cache for this session: repeating the same question
+    // returns the earlier answer instantly instead of re-generating (or
+    // re-paying for) it. Keyed on the literal input text.
+    let mut cache: std::collections::HashMap<String, (String, usize, f64)> = std::collections::HashMap::new();
 
     let rt = tokio::runtime::Runtime::new()?;
     let rt_handle = rt.handle().clone();
@@ -289,6 +293,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
             if let Some(eng) = local_engine.as_mut() { eng.reset(); }
             total_tokens = 0;
             total_spend = 0.0;
+            cache.clear();
             println!("Conversation reset.\\n");
             continue;
         }
@@ -352,6 +357,14 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
             continue;
         }
 
+        if let Some((cached_reply, cached_tokens, _)) = cache.get(&input) {
+            println!("[cached] repeated question — reusing earlier answer, no cost");
+            println!("{cached_reply}");
+            println!();
+            println!("({cached_tokens} tokens · $0.000000 this reply — served from cache · {total_tokens} tokens · ${total_spend:.6} total)\n");
+            continue;
+        }
+
         let (provider, route_reason) = if let Some(p) = provider_override.take() {
             let r = format!("manual override: /provider {p}");
             (p, r)
@@ -387,6 +400,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 total_tokens += tokens as u64;
                 total_spend += cost;
                 println!("({tokens} tokens · ${cost:.6} this reply · {total_tokens} tokens · ${total_spend:.6} total)\n");
+                cache.insert(input.clone(), (sanitize_terminal_text(&content), tokens, cost));
             }
             Err(e) => {
                 println!("Error: {}\\n", sanitize_terminal_text(&format!("{e}")));
