@@ -1,6 +1,6 @@
 # Buzz
 
-A privacy-first AI chat CLI. Talk to a local, on-device model by default; use a cloud provider (Groq, Anthropic, Gemini, Hugging Face) only when you choose to, or when a message is complex enough that Buzz suggests it.
+A privacy-first AI chat CLI. Talk to a local, on-device model by default; bring your own API key for a cloud provider and use it only when you choose to, or when a message is complex enough that Buzz suggests it.
 
 Runs entirely from your terminal — type a message, get a reply, same feel as GitHub Copilot CLI or Gemini CLI. No account required to use the local model.
 
@@ -18,7 +18,7 @@ Buzz also actively watches for things you probably don't want leaving your devic
 
 - Rust 1.75+ (to build)
 - A local GGUF model file. Not included in the repository — GGUF files typically run 500MB–5GB, too large for git. See "Getting a model" below.
-- Optionally, an API key for Groq, Anthropic, Gemini, and/or Hugging Face, if you want cloud fallback for complex questions.
+- Optionally, your own API key for a cloud provider, if you want cloud fallback for complex questions. Buzz currently supports bring-your-own-key for Groq, Anthropic, Gemini, and Hugging Face — use whichever you already have an account with.
 
 ---
 
@@ -26,7 +26,14 @@ Buzz also actively watches for things you probably don't want leaving your devic
 
 Buzz needs one `.gguf` model file on disk before local chat will work. This is a one-time download.
 
-The official, non-uncensored **Qwen2.5-Coder 1.5B Instruct** model is a good default: small (~1GB at Q4), fast on ordinary laptop hardware, and the exact architecture verified against Buzz's engine.
+Buzz's engine has been verified working against these architectures — any official (non-uncensored, non-abliterated) instruct model in one of these families should run correctly:
+
+| Family | Tested size | Notes |
+|---|---|---|
+| **Qwen2.5 / Qwen2.5-Coder** | 1.5B, 3B | Recommended default — smallest, fastest on ordinary laptop hardware |
+| **Llama 3.1 / 3.2** | 3B, 8B | Also fully supported |
+
+A good starting point — small, fast, official:
 
 ```bash
 huggingface-cli download Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF qwen2.5-coder-1.5b-instruct-q4_k_m.gguf --local-dir ~/.buzz/models
@@ -38,9 +45,9 @@ If you don't have `huggingface-cli` installed:
 pip install -U huggingface_hub[cli]
 ```
 
-Or download the same file directly from your browser at [huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF) and save it anywhere on disk — the exact folder doesn't matter, you'll point Buzz at it during setup.
+Or download any GGUF file for these architectures directly from your browser (e.g. [huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF)) and save it anywhere on disk — the exact folder doesn't matter, you'll point Buzz at it during setup.
 
-**Stick to the official `Qwen/` repos** (or well-known quantizers like `bartowski` or `unsloth` mirroring the same base model) rather than "uncensored" or "abliterated" variants — those are deliberately modified to strip the model's safety training, which isn't what you want for a general-purpose assistant.
+**Stick to official model repos** (`Qwen/`, `meta-llama/`, or well-known quantizers like `bartowski`/`unsloth` mirroring an official base model) rather than "uncensored" or "abliterated" variants — those are deliberately modified to strip the model's safety training, which isn't what you want for a general-purpose assistant. A `Q4_K_M` quantization is a good balance of size and quality for most machines.
 
 ---
 
@@ -88,7 +95,7 @@ Buzz — type a message, /settings, /provider <name>, /reset, or /quit
 (18 tokens · $0.000000 this reply · 18 tokens · $0.000000 total)
 ```
 
-The `[local]` tag (or `[groq]`, `[anthropic]`, etc.) shows where each message actually ran, and why. The line after each reply shows token usage and cost — both for that message and running totals for the session.
+The tag before each reply (`[local]`, or the name of whichever provider ran it) shows where that message actually ran, and why. The line after each reply shows token usage and cost — both for that message and running totals for the session.
 
 ### One-shot mode
 
@@ -103,17 +110,19 @@ Sends a single prompt, prints the answer, exits. No conversation memory. Add `--
 | Command | What it does |
 |---|---|
 | `/settings` | Show current provider keys (masked), model path, and budget |
-| `/settings <groq\|anthropic\|gemini\|hf\|model\|budget> <value>` | Change one setting without leaving the chat |
-| `/provider <name>` | Route the *next* message only to a specific provider (`local`, `groq`, `anthropic`, `gemini`, `hf`) — routing then returns to automatic |
+| `/settings <provider\|model\|budget> <value>` | Set your own API key for a provider, or change the model path / budget, without leaving the chat |
+| `/provider <name>` | Route the *next* message only to a specific provider (`local` or one of your configured cloud providers) — routing then returns to automatic |
 | `/reset` | Clear conversation memory and the response cache |
 | `/stats` | Show session token and spend totals |
 | `/quit` or `/exit` | Leave |
 
-Example — adding a Groq key without re-running setup:
+Example — adding your own key for a provider without re-running setup:
 ```
-> /settings groq gsk_your_real_key_here
+> /settings groq your_own_api_key_here
 groq key updated
 ```
+
+Buzz currently recognizes `groq`, `anthropic`, `gemini`, and `hf` as provider names — use `/settings` (with no arguments) to see the exact list and your current status for each.
 
 ---
 
