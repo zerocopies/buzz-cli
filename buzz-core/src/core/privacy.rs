@@ -6,6 +6,12 @@ lazy_static! {
     static ref EMAIL_REGEX: Regex = Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap();
     static ref PHONE_REGEX: Regex = Regex::new(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b").unwrap();
     static ref CREDIT_CARD_REGEX: Regex = Regex::new(r"\b(?:\d{4}[- ]?){3}\d{4}\b").unwrap();
+    // Unlabeled API keys / tokens: long runs of mixed-case letters, digits,
+    // and - or _, the shape of most vendor tokens (sk-..., ghp_..., etc.)
+    // regardless of whether the word "key" or "secret" appears nearby.
+    static ref API_KEY_REGEX: Regex = Regex::new(r"\b[A-Za-z0-9_-]{24,}\b").unwrap();
+    // IPv4 addresses.
+    static ref IP_REGEX: Regex = Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
 }
 
 pub fn scan_text(text: &str) -> bool {
@@ -17,7 +23,9 @@ pub fn contains_pii(text: &str) -> bool {
     SSN_REGEX.is_match(text) || 
     EMAIL_REGEX.is_match(text) || 
     PHONE_REGEX.is_match(text) || 
-    CREDIT_CARD_REGEX.is_match(text)
+    CREDIT_CARD_REGEX.is_match(text) ||
+    API_KEY_REGEX.is_match(text) ||
+    IP_REGEX.is_match(text)
 }
 
 pub fn contains_sensitive_keywords(text: &str) -> bool {
@@ -44,6 +52,12 @@ pub fn analyze_privacy(text: &str) -> (bool, Vec<String>) {
     }
     if CREDIT_CARD_REGEX.is_match(text) {
         flags.push("Credit card pattern detected".to_string());
+    }
+    if API_KEY_REGEX.is_match(text) {
+        flags.push("Possible API key or token detected".to_string());
+    }
+    if IP_REGEX.is_match(text) {
+        flags.push("IP address detected".to_string());
     }
     if contains_sensitive_keywords(text) {
         flags.push("Sensitive keywords present".to_string());
