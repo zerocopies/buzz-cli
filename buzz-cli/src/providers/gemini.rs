@@ -2,6 +2,9 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::error::Error;
 
+use super::sse::for_each_sse_data;
+use buzz_core::{InferenceProvider, ProviderResponse};
+
 const DEFAULT_MODEL: &str = "gemini-1.5-flash";
 
 pub struct GeminiProvider {
@@ -18,14 +21,25 @@ impl GeminiProvider {
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
         }
     }
+}
 
-    pub async fn generate(&self, prompt: &str) -> Result<(String, u64, f64), Box<dyn Error + Send + Sync>> {
+impl InferenceProvider for GeminiProvider {
+    async fn generate(
+        &mut self,
+        prompt: &str,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ProviderResponse, Box<dyn Error>> {
+        // streamGenerateContent + alt=sse is Gemini's documented streaming
+        // endpoint — same request body as generateContent, different path
+        // suffix and an SSE response instead of one JSON blob.
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
             self.model, self.api_key
         );
 
-        let response = self.client
+        let start = std::time::Instant::now();
+        let response = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&json!({
@@ -41,16 +55,41 @@ impl GeminiProvider {
             return Err(format!("Gemini {} - {}", status, body).into());
         }
 
-        let body: Value = response.json().await?;
+        let mut content = String::new();
+        // Real usage, if a chunk happens to include usageMetadata; falls
+        // back to the same length-based estimate the non-streaming path
+        // already used, rather than depending on an unconfirmed field.
+        let mut real_input_tokens: Option<u64> = None;
+        let mut real_output_tokens: Option<u64> = None;
 
-        let content = body["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .ok_or("No content in response")?
-            .to_string();
+        for_each_sse_data(response, |data| {
+            let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+                return true;
+            };
+            if let Some(piece) = chunk["candidates"][0]["content"]["parts"][0]["text"].as_str() {
+                content.push_str(piece);
+                on_token(piece);
+            }
+            if let Some(usage) = chunk.get("usageMetadata") {
+                real_input_tokens = usage["promptTokenCount"].as_u64();
+                real_output_tokens = usage["candidatesTokenCount"].as_u64();
+            }
+            true
+        })
+        .await?;
 
-        let estimated_tokens = prompt.len() as u64 / 4 + content.len() as u64 / 4;
-        let cost = estimated_tokens as f64 * 0.00000035;
+        if content.is_empty() {
+            return Err("No content in response".into());
+        }
 
-        Ok((content, estimated_tokens, cost))
+        let input_tokens = real_input_tokens.unwrap_or_else(|| (prompt.len() as u64 / 4).max(1));
+        let output_tokens = real_output_tokens.unwrap_or_else(|| (content.len() as u64 / 4).max(1));
+
+        Ok(ProviderResponse {
+            content,
+            input_tokens,
+            output_tokens,
+            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+        })
     }
 }

@@ -8,19 +8,11 @@ name = "buzz-cli"
 path = "src/main.rs"
 
 [dependencies]
-lazy_static = "1.4"
-humantime = "2.4"
 buzz-core = { path = "../buzz-core" }
-qfz3 = { path = "../../qfz3/qfz3-engine" }
+qfz3 = { git = "https://github.com/zerocopies/qfz3.git", rev = "4f426e663550cf70663d468c4822a82b5e9df941" }
 tokio = { version = "1", features = ["full", "macros", "rt-multi-thread"] }
 crossterm = "0.27"
-ratatui = "0.27"
-regex = "1"
-reqwest = { version = "0.12", features = ["json"] }
-tracing = "0.1.44"
-anyhow = "1.0.104"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
 serde_json = "1.0.151"
-indicatif = "0.18.6"
-colored = "3.1.1"
 clap = { version = "4.5", features = ["derive"] }
-ctrlc = "3.5.2"

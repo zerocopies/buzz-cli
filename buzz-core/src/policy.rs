@@ -1,11 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Providers {
-    pub groq_api_key: Option<String>,
-    pub anthropic_api_key: Option<String>,
-    pub gemini_api_key: Option<String>,
-    pub hf_api_key: Option<String>,
     #[serde(default)]
     pub groq: String,
     #[serde(default)]
@@ -14,21 +10,6 @@ pub struct Providers {
     pub gemini: String,
     #[serde(default)]
     pub hf: String,
-}
-
-impl Default for Providers {
-    fn default() -> Self {
-        Self {
-            groq_api_key: None,
-            anthropic_api_key: None,
-            gemini_api_key: None,
-            hf_api_key: None,
-            groq: String::new(),
-            anthropic: String::new(),
-            gemini: String::new(),
-            hf: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,14 +127,8 @@ impl Default for AuditConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    pub groq_api_key: Option<String>,
-    pub anthropic_api_key: Option<String>,
-    pub gemini_api_key: Option<String>,
-    pub hf_api_key: Option<String>,
-    pub budget_limit: Option<f64>,
-    pub default_provider: Option<String>,
     #[serde(default)]
     pub providers: Providers,
     #[serde(default)]
@@ -164,24 +139,6 @@ pub struct Config {
     pub local: LocalConfig,
     #[serde(default)]
     pub audit: AuditConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            groq_api_key: None,
-            anthropic_api_key: None,
-            gemini_api_key: None,
-            hf_api_key: None,
-            budget_limit: Some(10.0),
-            default_provider: Some("groq".to_string()),
-            providers: Providers::default(),
-            routing: RoutingConfig::default(),
-            cost: CostConfig::default(),
-            local: LocalConfig::default(),
-            audit: AuditConfig::default(),
-        }
-    }
 }
 
 impl Config {
@@ -202,5 +159,71 @@ impl Config {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Direct regression test for the outage this project already had once:
+    /// a config saved by this binary must always be loadable by this binary.
+    /// Any field the strict deserializer requires without a serde default
+    /// would fail this the moment it's added, instead of failing silently
+    /// at 2am in someone's ~/.buzz/config.toml.
+    #[test]
+    fn default_config_round_trips_through_save_and_load() {
+        let path = std::env::temp_dir().join(format!(
+            "buzz-config-test-{:?}.toml",
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let original = Config::default();
+        original
+            .save_to_file(&path)
+            .expect("save_to_file should succeed");
+
+        let loaded = Config::load_from_file(&path)
+            .expect("a config this binary just wrote must parse back cleanly");
+
+        assert_eq!(loaded.local.model_path, original.local.model_path);
+        assert_eq!(
+            loaded.local.max_context_size,
+            original.local.max_context_size
+        );
+        assert_eq!(
+            loaded.cost.max_per_request_usd,
+            original.cost.max_per_request_usd
+        );
+        assert_eq!(loaded.audit.log_path, original.audit.log_path);
+        assert_eq!(
+            loaded.routing.cloud_fallback_order,
+            original.routing.cloud_fallback_order
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_config_with_only_the_fields_a_user_would_hand_write_still_loads() {
+        // Mirrors a minimal, hand-edited config: only the fields someone would
+        // actually type, missing everything a strict parse used to require.
+        let minimal = "[providers]\ngroq = \"sk-test\"\n";
+        let path = std::env::temp_dir().join(format!(
+            "buzz-config-minimal-test-{:?}.toml",
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, minimal).unwrap();
+
+        let loaded = Config::load_from_file(&path)
+            .expect("missing optional fields must fall back to defaults, not fail the whole parse");
+        assert_eq!(loaded.providers.groq, "sk-test");
+        assert_eq!(
+            loaded.local.max_context_size,
+            LocalConfig::default_max_context_size()
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -2,6 +2,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::error::Error;
 
+use buzz_core::{InferenceProvider, ProviderResponse};
+
 const HF_ENDPOINT: &str = "https://api-inference.huggingface.co/models";
 const DEFAULT_MODEL: &str = "meta-llama/Llama-3.3-70B-Instruct";
 
@@ -19,11 +21,19 @@ impl HuggingFaceProvider {
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
         }
     }
+}
 
-    pub async fn generate(&self, prompt: &str) -> Result<(String, u64, f64), Box<dyn Error + Send + Sync>> {
+impl InferenceProvider for HuggingFaceProvider {
+    async fn generate(
+        &mut self,
+        prompt: &str,
+        _on_token: &mut dyn FnMut(&str),
+    ) -> Result<ProviderResponse, Box<dyn Error>> {
         let url = format!("{}/{}", HF_ENDPOINT, self.model);
 
-        let response = self.client
+        let start = std::time::Instant::now();
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -54,9 +64,14 @@ impl HuggingFaceProvider {
             .ok_or("No content in HuggingFace response")?
             .to_string();
 
-        let estimated_tokens = prompt.len() as u64 / 4 + content.len() as u64 / 4;
-        let cost = 0.0; // HF free tier
+        let input_tokens = prompt.len() as u64 / 4;
+        let output_tokens = content.len() as u64 / 4;
 
-        Ok((content, estimated_tokens, cost))
+        Ok(ProviderResponse {
+            content,
+            input_tokens,
+            output_tokens,
+            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+        })
     }
 }
