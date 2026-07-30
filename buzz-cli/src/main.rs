@@ -280,6 +280,7 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
         core_config.local.model_path.clone(),
         core_config.local.max_context_size,
     );
+    let mut streamed_anything = false;
     let (served_by, result) = dispatch_with_fallback(
         route.provider.as_str(),
         &core_config.routing.cloud_fallback_order,
@@ -287,6 +288,7 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
         &core_config,
         &mut local,
         |piece| {
+            streamed_anything = true;
             print!("{piece}");
             let _ = std::io::stdout().flush();
         },
@@ -304,7 +306,12 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
 
     match result {
         Ok(resp) => {
-            if served_by != "local" {
+            // Providers that stream (local always; Groq/Anthropic/Gemini as
+            // of this session) already printed their content incrementally
+            // via on_token — printing resp.content here too would duplicate
+            // it. Only providers that don't stream (currently HuggingFace)
+            // need it printed after the fact.
+            if !streamed_anything {
                 println!("{}", resp.content);
             }
             println!();
@@ -399,18 +406,22 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
         if input == "/settings" || input == "/setup" {
             let cur = get_config().unwrap_or_default();
             println!(
-                "Settings — groq: {} | anthropic: {} | gemini: {} | hf: {} | model: {} | budget: ${:.2}",
+                "Settings — groq: {} | anthropic: {} | gemini: {} | hf: {} | model: {} | daily budget: ${:.2} | max per-request: ${:.2}",
                 mask_secret(&cur.providers.groq), mask_secret(&cur.providers.anthropic),
                 mask_secret(&cur.providers.gemini), mask_secret(&cur.providers.hf),
-                cur.local.model_path, cur.cost.daily_budget_usd
+                cur.local.model_path, cur.cost.daily_budget_usd, cur.cost.max_per_request_usd
             );
-            println!("Change with: /settings <groq|anthropic|gemini|hf|model|budget> <value>\n");
+            println!(
+                "Change with: /settings <groq|anthropic|gemini|hf|model|budget|maxrequest> <value>\n"
+            );
             continue;
         }
         if let Some(rest) = input.strip_prefix("/settings ") {
             let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
             if parts.len() < 2 {
-                println!("Usage: /settings <groq|anthropic|gemini|hf|model|budget> <value>\n");
+                println!(
+                    "Usage: /settings <groq|anthropic|gemini|hf|model|budget|maxrequest> <value>\n"
+                );
                 continue;
             }
             let key = parts[0].to_lowercase();
@@ -444,8 +455,15 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     }
                     Err(_) => Err(format!("invalid budget value: {value}")),
                 },
+                "maxrequest" | "max_request" | "max-request" => match value.parse::<f64>() {
+                    Ok(n) => {
+                        cur.cost.max_per_request_usd = n;
+                        Ok(format!("max per-request cost set to ${n:.2}"))
+                    }
+                    Err(_) => Err(format!("invalid value: {value}")),
+                },
                 other => Err(format!(
-                    "Unknown setting: {other}. Use groq|anthropic|gemini|hf|model|budget"
+                    "Unknown setting: {other}. Use groq|anthropic|gemini|hf|model|budget|maxrequest"
                 )),
             };
             match result {
@@ -649,7 +667,9 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
         println!("{}", theme::dim(&format!("[{provider}] {route_reason}")));
 
         let mut out = std::io::stdout();
+        let mut streamed_anything = false;
         let on_token = |piece: &str| {
+            streamed_anything = true;
             print!("{piece}");
             let _ = out.flush();
         };
@@ -682,7 +702,12 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
 
         match result {
             Ok(resp) => {
-                if served_by != "local" {
+                // Providers that stream (local always; Groq/Anthropic/Gemini
+                // as of this session) already printed their content
+                // incrementally via on_token — printing resp.content here
+                // too would duplicate it. Only providers that don't stream
+                // (currently HuggingFace) need it printed after the fact.
+                if !streamed_anything {
                     println!("{}", sanitize_terminal_text(&resp.content));
                 }
                 println!();
