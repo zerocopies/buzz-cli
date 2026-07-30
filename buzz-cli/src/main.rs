@@ -363,6 +363,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
     let mut provider_override: Option<String> = None;
     let mut total_tokens: u64 = 0;
     let mut total_spend: f64 = 0.0;
+    let mut total_elapsed_ms: f64 = 0.0;
     // Exact-match reply cache for this session: repeating the same question
     // returns the earlier answer instantly instead of re-generating (or
     // re-paying for) it. Keyed on the literal input text.
@@ -391,12 +392,21 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
             local.reset();
             total_tokens = 0;
             total_spend = 0.0;
+            total_elapsed_ms = 0.0;
             cache.clear();
             println!("Conversation reset.\n");
             continue;
         }
         if input == "/stats" {
-            println!("Stats: {total_tokens} tokens | ${total_spend:.6} spent\n");
+            let avg_speed = if total_elapsed_ms > 0.0 {
+                total_tokens as f64 / (total_elapsed_ms / 1000.0)
+            } else {
+                0.0
+            };
+            println!(
+                "Stats: {total_tokens} tokens | ${total_spend:.6} spent | {:.2}s total time | {avg_speed:.1} tok/s avg\n",
+                total_elapsed_ms / 1000.0
+            );
             continue;
         }
         if input == "/audit" {
@@ -722,6 +732,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 let tokens = resp.input_tokens + resp.output_tokens;
                 total_tokens += tokens;
                 total_spend += cost;
+                total_elapsed_ms += resp.elapsed_ms;
                 let (_, privacy_flags) = buzz_core::analyze_privacy(&input);
                 buzz_core::audit::log_route(
                     &config.audit,
@@ -755,7 +766,10 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
     }
 
     println!("\n  {}", theme::bold("Buzz — Session Summary"));
-    println!("  Tokens: {total_tokens} | Spent: ${total_spend:.6}\n");
+    println!(
+        "  Tokens: {total_tokens} | Spent: ${total_spend:.6} | Time: {:.2}s\n",
+        total_elapsed_ms / 1000.0
+    );
 
     Ok(())
 }
