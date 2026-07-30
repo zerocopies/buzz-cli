@@ -1,12 +1,15 @@
 mod providers;
+mod theme;
 
-use clap::Parser;
-use std::io::Write;
 use buzz_core::policy::Config;
+use clap::Parser;
 use std::error::Error;
+use std::io::Write;
 
-use buzz_core::{decide_route, RouteProvider};
-use providers::{AnthropicProvider, GeminiProvider, GroqProvider, HuggingFaceProvider};
+use buzz_core::{decide_route, InferenceProvider, ProviderResponse, RouteProvider};
+use providers::{
+    AnthropicProvider, GeminiProvider, GroqProvider, HuggingFaceProvider, LocalProvider,
+};
 
 #[derive(Parser)]
 #[command(
@@ -27,99 +30,128 @@ struct Cli {
     show_routing: bool,
 }
 
-
-
-/// Run the local qfz3 engine, loading it once on first use and reusing it (and
-/// its KV cache / turn counter) for the rest of the session — this is what makes
-/// multi-turn memory work and avoids reloading the model per message.
-fn run_local(
-    prompt: &str,
-    engine: &mut Option<qfz3::Engine>,
-    model_path: &str,
-    mut on_token: impl FnMut(&str),
-) -> Result<(String, usize, f64), Box<dyn Error>> {
-    if engine.is_none() {
-        *engine = Some(qfz3::Engine::load(model_path, 4096, None)?);
-    }
-    let eng = engine.as_mut().unwrap();
-    let out = eng.generate_streaming(prompt, 512, |piece| on_token(piece))
-        .map_err(|e| -> Box<dyn Error> { e.into() })?;
-    Ok((out.text, out.completion_tokens as usize, 0.0))
-}
-
-/// Bridge an async cloud provider through the existing runtime; empty key -> error.
-fn block_cloud(
-    rt: &tokio::runtime::Handle,
-    key: &str,
-    key_name: &str,
-    call: impl std::future::Future<Output = Result<(String, u64, f64), Box<dyn Error + Send + Sync>>>,
-) -> Result<(String, usize, f64), Box<dyn Error>> {
+/// A configured key is required for every cloud provider; local needs none.
+fn require_key<'a>(key: &'a str, key_name: &str) -> Result<&'a str, Box<dyn Error>> {
     if key.trim().is_empty() {
-        return Err(format!(
-            "No API key configured ({key_name}). Run --setup or edit ~/.buzz/config.toml."
-        ).into());
+        Err(
+            format!("No API key configured ({key_name}). Run --setup or edit ~/.buzz/config.toml.")
+                .into(),
+        )
+    } else {
+        Ok(key)
     }
-    let (content, tokens, cost) = rt.block_on(call).map_err(|e| e.to_string())?;
-    Ok((content, tokens as usize, cost))
 }
 
-/// Events sent from the background generation thread back to the main loop.
-
-/// TUI dispatch: local on-device, cloud via runtime. Selected by provider name.
-fn execute_provider(
-    provider: &str,
-    prompt: &str,
-    engine: &mut Option<qfz3::Engine>,
+/// Pre-flight budget guard for a cloud call — checked uniformly for every
+/// cloud provider (including explicit /provider overrides, not just
+/// auto-routed requests) so the budget can't be bypassed just by naming a
+/// provider directly. Local is exempt inside `buzz_core::budget::check`.
+fn check_budget(
     config: &Config,
-    rt: &tokio::runtime::Handle,
-) -> Result<(String, usize, f64), Box<dyn Error>> {
+    provider: RouteProvider,
+    prompt: &str,
+) -> Result<(), Box<dyn Error>> {
+    let estimated = buzz_core::budget::estimate_cost(prompt, provider);
+    let result = buzz_core::budget::check(config, provider, estimated);
+    if result.is_ok() {
+        Ok(())
+    } else {
+        Err(result.to_string().into())
+    }
+}
+
+/// Single dispatch path for every provider, local or cloud — both TUI mode
+/// (via `rt_handle.block_on`) and one-shot `--prompt` mode (via a direct
+/// `.await`, already inside a runtime) call through here. Local is just
+/// another `InferenceProvider` now, not a specially-cased branch: `local`
+/// carries the persistent engine/KV-cache state across calls, while cloud
+/// providers are cheap to construct fresh each time from the current config
+/// (so a `/settings` key change takes effect on the very next message).
+async fn dispatch_provider(
+    provider: &str,
+    prompt: &str,
+    config: &Config,
+    local: &mut LocalProvider,
+    mut on_token: impl FnMut(&str),
+) -> Result<ProviderResponse, Box<dyn Error>> {
     match provider {
-        "local" => run_local(prompt, engine, &config.local.model_path, |_| {}),
-        "groq" => { let k = config.providers.groq.clone();
-            block_cloud(rt, &k, "groq_api_key", GroqProvider::new(k.clone(), None).generate(prompt)) }
-        "anthropic" => { let k = config.providers.anthropic.clone();
-            block_cloud(rt, &k, "anthropic_api_key", AnthropicProvider::new(k.clone(), None).generate(prompt)) }
-        "gemini" => { let k = config.providers.gemini.clone();
-            block_cloud(rt, &k, "gemini_api_key", GeminiProvider::new(k.clone(), None).generate(prompt)) }
-        "huggingface" | "hf" => { let k = config.providers.hf.clone();
-            block_cloud(rt, &k, "hf_api_key", HuggingFaceProvider::new(k.clone(), None).generate(prompt)) }
+        "local" => local.generate(prompt, &mut on_token).await,
+        "groq" => {
+            let key = require_key(&config.providers.groq, "groq_api_key")?;
+            check_budget(config, RouteProvider::Groq, prompt)?;
+            GroqProvider::new(key.to_string(), None)
+                .generate(prompt, &mut on_token)
+                .await
+        }
+        "anthropic" => {
+            let key = require_key(&config.providers.anthropic, "anthropic_api_key")?;
+            check_budget(config, RouteProvider::Anthropic, prompt)?;
+            AnthropicProvider::new(key.to_string(), None)
+                .generate(prompt, &mut on_token)
+                .await
+        }
+        "gemini" => {
+            let key = require_key(&config.providers.gemini, "gemini_api_key")?;
+            check_budget(config, RouteProvider::Gemini, prompt)?;
+            GeminiProvider::new(key.to_string(), None)
+                .generate(prompt, &mut on_token)
+                .await
+        }
+        "huggingface" | "hf" => {
+            let key = require_key(&config.providers.hf, "hf_api_key")?;
+            check_budget(config, RouteProvider::HuggingFace, prompt)?;
+            HuggingFaceProvider::new(key.to_string(), None)
+                .generate(prompt, &mut on_token)
+                .await
+        }
         other => Err(format!("Unknown provider: {other}").into()),
     }
 }
 
-/// One-shot dispatch for --prompt: async, awaited directly (already inside the
-/// runtime, so no nested block_on). Local still goes through the sync engine.
-async fn execute_provider_oneshot(
-    provider: &str,
+/// Auto-routed dispatch: tries the router's chosen provider, then walks the
+/// rest of `cloud_fallback_order` (previously only index [0] was ever
+/// consulted — the rest of the list was decorative), then falls back to
+/// local as a guaranteed last resort so an auto-routed request never just
+/// fails outright. Returns the provider name that actually served the
+/// response, which may differ from `initial`.
+///
+/// Not used for explicit `/provider <name>` overrides — a user who names a
+/// provider directly gets exactly that provider (or a clear error), never a
+/// silent substitute they didn't ask for.
+async fn dispatch_with_fallback(
+    initial: &str,
+    fallback_order: &[String],
     prompt: &str,
-    core_cfg: &buzz_core::Config,
-) -> Result<(String, usize, f64), Box<dyn Error>> {
-    async fn cloud(
-        key: String, name: &str,
-        fut: impl std::future::Future<Output = Result<(String, u64, f64), Box<dyn Error + Send + Sync>>>,
-    ) -> Result<(String, usize, f64), Box<dyn Error>> {
-        if key.trim().is_empty() {
-            return Err(format!("No API key configured ({name}). Run --setup or edit ~/.buzz/config.toml.").into());
+    config: &Config,
+    local: &mut LocalProvider,
+    mut on_token: impl FnMut(&str),
+) -> (String, Result<ProviderResponse, Box<dyn Error>>) {
+    let mut attempts: Vec<String> = vec![initial.to_string()];
+    for raw in fallback_order {
+        let canonical = raw
+            .trim()
+            .to_lowercase()
+            .parse::<RouteProvider>()
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_else(|_| raw.trim().to_lowercase());
+        if !attempts.contains(&canonical) {
+            attempts.push(canonical);
         }
-        let (c, t, cost) = fut.await.map_err(|e| e.to_string())?;
-        Ok((c, t as usize, cost))
     }
-    match provider {
-        "local" => {
-            let mut eng = qfz3::Engine::load(&core_cfg.local.model_path, 4096, None)?;
-            let (c, t) = eng.generate_sync(prompt, 512)?;
-            Ok((c, t as usize, 0.0))
+    if !attempts.iter().any(|p| p == "local") {
+        attempts.push("local".to_string());
+    }
+
+    let mut last_result = None;
+    for provider in &attempts {
+        let result = dispatch_provider(provider, prompt, config, local, &mut on_token).await;
+        let succeeded = result.is_ok();
+        last_result = Some((provider.clone(), result));
+        if succeeded {
+            break;
         }
-        "groq" => { let k = core_cfg.providers.groq.clone();
-            cloud(k.clone(), "groq_api_key", GroqProvider::new(k, None).generate(prompt)).await }
-        "anthropic" => { let k = core_cfg.providers.anthropic.clone();
-            cloud(k.clone(), "anthropic_api_key", AnthropicProvider::new(k, None).generate(prompt)).await }
-        "gemini" => { let k = core_cfg.providers.gemini.clone();
-            cloud(k.clone(), "gemini_api_key", GeminiProvider::new(k, None).generate(prompt)).await }
-        "huggingface" | "hf" => { let k = core_cfg.providers.hf.clone();
-            cloud(k.clone(), "hf_api_key", HuggingFaceProvider::new(k, None).generate(prompt)).await }
-        other => Err(format!("Unknown provider: {other}").into()),
     }
+    last_result.expect("attempts always has at least one entry (initial)")
 }
 
 /// Idempotent terminal restore. Safe to call multiple times; errors ignored.
@@ -132,9 +164,8 @@ fn restore_terminal() {
     );
 }
 
-/// Drop guard: restores the terminal on early `?` returns and unwinds,
-/// not just the happy-path teardown at the end of run_tui_mode.
-
+/// Restores the terminal on panic, not just on the happy-path teardown at
+/// the end of run_tui_mode.
 fn install_panic_restore() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -150,7 +181,6 @@ fn sanitize_terminal_text(s: &str) -> String {
         .filter(|&c| c == '\n' || c == '\t' || (c >= ' ' && c != '\u{7f}'))
         .collect()
 }
-
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
@@ -168,7 +198,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     run_tui_mode(&provider, cli.show_routing)
 }
 
-
 fn run_setup_wizard() -> Result<(), Box<dyn Error>> {
     println!("\n{}", "=".repeat(50));
     println!("  Buzz CLI Setup");
@@ -183,29 +212,36 @@ fn run_setup_wizard() -> Result<(), Box<dyn Error>> {
     config.providers.groq = input.trim().to_string();
 
     print!("Anthropic API key (Enter to skip): ");
-    input.clear(); std::io::stdout().flush()?;
+    input.clear();
+    std::io::stdout().flush()?;
     std::io::stdin().read_line(&mut input)?;
     config.providers.anthropic = input.trim().to_string();
 
     print!("Gemini API key (Enter to skip): ");
-    input.clear(); std::io::stdout().flush()?;
+    input.clear();
+    std::io::stdout().flush()?;
     std::io::stdin().read_line(&mut input)?;
     config.providers.gemini = input.trim().to_string();
 
     print!("HuggingFace API key (Enter to skip): ");
-    input.clear(); std::io::stdout().flush()?;
+    input.clear();
+    std::io::stdout().flush()?;
     std::io::stdin().read_line(&mut input)?;
     config.providers.hf = input.trim().to_string();
 
     print!("\nDaily budget USD (default $5.00): ");
-    input.clear(); std::io::stdout().flush()?;
+    input.clear();
+    std::io::stdout().flush()?;
     std::io::stdin().read_line(&mut input)?;
     config.cost.daily_budget_usd = input.trim().parse().unwrap_or(5.0);
 
     save_config(&config)?;
 
-    println!("\n  Config saved to ~/.buzz/config.toml");
-    println!("  Run: buzz --chat\n");
+    println!(
+        "\n  {}",
+        theme::green("Config saved to ~/.buzz/config.toml")
+    );
+    println!("  Run: buzz-cli\n");
 
     Ok(())
 }
@@ -225,30 +261,77 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
         println!("  Confidence: {:.2}", route.confidence);
         println!("  Reason: {}", route.reason);
         println!("{}", bar);
+    } else {
+        // Always show at least this much — matching the TUI, which prints
+        // "[provider] reason" on every turn with no flag needed. Without
+        // this, one-shot mode gives zero visibility into why a prompt went
+        // local vs. cloud unless you remember to pass --show-routing.
+        println!(
+            "{}",
+            theme::dim(&format!("[{}] {}", route.provider.as_str(), route.reason))
+        );
     }
 
     let bar = "-".repeat(50);
     println!("\n  Executing Request");
     println!("{}", bar);
 
-    let provider_str = match route.provider {
-        RouteProvider::Groq => "groq",
-        RouteProvider::Anthropic => "anthropic",
-        RouteProvider::Gemini => "gemini",
-        RouteProvider::HuggingFace => "huggingface",
-        RouteProvider::Local => "local",
-    };
-
-    let result = execute_provider_oneshot(provider_str, prompt, &core_config).await;
+    let mut local = LocalProvider::new(
+        core_config.local.model_path.clone(),
+        core_config.local.max_context_size,
+    );
+    let (served_by, result) = dispatch_with_fallback(
+        route.provider.as_str(),
+        &core_config.routing.cloud_fallback_order,
+        prompt,
+        &core_config,
+        &mut local,
+        |piece| {
+            print!("{piece}");
+            let _ = std::io::stdout().flush();
+        },
+    )
+    .await;
+    if served_by != route.provider.as_str() {
+        println!(
+            "\n{}",
+            theme::yellow(&format!(
+                "[fallback] {served_by} (originally routed to {})",
+                route.provider.as_str()
+            ))
+        );
+    }
 
     match result {
-        Ok((content, tokens, cost)) => {
-            println!("{}\n", content);
+        Ok(resp) => {
+            if served_by != "local" {
+                println!("{}", resp.content);
+            }
+            println!();
             println!("{}", bar);
-            println!("  Tokens: {} | Cost: ${:.6}", tokens, cost);
+            let served_provider = served_by.parse::<RouteProvider>().unwrap_or(route.provider);
+            let cost =
+                buzz_core::calculate_cost(resp.input_tokens, resp.output_tokens, served_provider);
+            let (_, privacy_flags) = buzz_core::analyze_privacy(prompt);
+            buzz_core::audit::log_route(
+                &core_config.audit,
+                &served_by,
+                &route.reason,
+                &privacy_flags,
+                resp.input_tokens,
+                resp.output_tokens,
+                cost,
+            );
+            println!(
+                "  Tokens: {} | Cost: ${:.6} | {:.1} tok/s | {:.2}s",
+                resp.input_tokens + resp.output_tokens,
+                cost,
+                resp.tokens_per_second(),
+                resp.elapsed_ms / 1000.0
+            );
         }
         Err(e) => {
-            eprintln!("\n  Error: {}", e);
+            eprintln!("\n  {}", theme::red(&format!("Error: {}", e)));
             std::process::exit(1);
         }
     }
@@ -257,116 +340,294 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
     Ok(())
 }
 
-
 fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<dyn Error>> {
     install_panic_restore();
 
-    let config = get_config().unwrap_or_default();
-    println!("Buzz — type a message, /settings, /provider <name>, /reset, or /quit\n");
+    let mut config = get_config().unwrap_or_default();
+    println!(
+        "{} — type a message, /settings, /provider <name>, /audit, /reset, or /quit\n",
+        theme::bold("Buzz")
+    );
 
-    let mut local_engine: Option<qfz3::Engine> = None;
+    let mut local = LocalProvider::new(
+        config.local.model_path.clone(),
+        config.local.max_context_size,
+    );
     let mut provider_override: Option<String> = None;
     let mut total_tokens: u64 = 0;
     let mut total_spend: f64 = 0.0;
     // Exact-match reply cache for this session: repeating the same question
     // returns the earlier answer instantly instead of re-generating (or
     // re-paying for) it. Keyed on the literal input text.
-    let mut cache: std::collections::HashMap<String, (String, usize, f64)> = std::collections::HashMap::new();
+    let mut cache: std::collections::HashMap<String, (String, usize, f64)> =
+        std::collections::HashMap::new();
 
     let rt = tokio::runtime::Runtime::new()?;
     let rt_handle = rt.handle().clone();
 
     loop {
-        print!("> ");
+        print!("{} ", theme::cyan(">"));
         std::io::stdout().flush()?;
         let mut line = String::new();
         if std::io::stdin().read_line(&mut line)? == 0 {
             break;
         }
         let input = line.trim().to_string();
-        if input.is_empty() { continue; }
+        if input.is_empty() {
+            continue;
+        }
 
         if input == "/quit" || input == "/exit" {
             break;
         }
         if input == "/reset" {
-            if let Some(eng) = local_engine.as_mut() { eng.reset(); }
+            local.reset();
             total_tokens = 0;
             total_spend = 0.0;
             cache.clear();
-            println!("Conversation reset.\\n");
+            println!("Conversation reset.\n");
             continue;
         }
         if input == "/stats" {
-            println!("Stats: {total_tokens} tokens | ${total_spend:.6} spent\\n");
+            println!("Stats: {total_tokens} tokens | ${total_spend:.6} spent\n");
+            continue;
+        }
+        if input == "/audit" {
+            print_audit(&config.audit);
             continue;
         }
         if input == "/settings" || input == "/setup" {
             let cur = get_config().unwrap_or_default();
-            let mask = |s: &str| if s.is_empty() { "(not set)".to_string() }
-                else { format!("set ({} chars)", s.len()) };
             println!(
                 "Settings — groq: {} | anthropic: {} | gemini: {} | hf: {} | model: {} | budget: ${:.2}",
-                mask(&cur.providers.groq), mask(&cur.providers.anthropic),
-                mask(&cur.providers.gemini), mask(&cur.providers.hf),
+                mask_secret(&cur.providers.groq), mask_secret(&cur.providers.anthropic),
+                mask_secret(&cur.providers.gemini), mask_secret(&cur.providers.hf),
                 cur.local.model_path, cur.cost.daily_budget_usd
             );
-            println!("Change with: /settings <groq|anthropic|gemini|hf|model|budget> <value>\\n");
+            println!("Change with: /settings <groq|anthropic|gemini|hf|model|budget> <value>\n");
             continue;
         }
         if let Some(rest) = input.strip_prefix("/settings ") {
             let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
             if parts.len() < 2 {
-                println!("Usage: /settings <groq|anthropic|gemini|hf|model|budget> <value>\\n");
+                println!("Usage: /settings <groq|anthropic|gemini|hf|model|budget> <value>\n");
                 continue;
             }
             let key = parts[0].to_lowercase();
             let value = parts[1].trim();
             let mut cur = get_config().unwrap_or_default();
             let result: Result<String, String> = match key.as_str() {
-                "groq" => { cur.providers.groq = value.to_string(); Ok("groq key updated".to_string()) }
-                "anthropic" => { cur.providers.anthropic = value.to_string(); Ok("anthropic key updated".to_string()) }
-                "gemini" => { cur.providers.gemini = value.to_string(); Ok("gemini key updated".to_string()) }
-                "hf" | "huggingface" => { cur.providers.hf = value.to_string(); Ok("huggingface key updated".to_string()) }
-                "model" => { cur.local.model_path = value.to_string(); Ok(format!("local model path set to: {value}")) }
+                "groq" => {
+                    cur.providers.groq = value.to_string();
+                    Ok("groq key updated".to_string())
+                }
+                "anthropic" => {
+                    cur.providers.anthropic = value.to_string();
+                    Ok("anthropic key updated".to_string())
+                }
+                "gemini" => {
+                    cur.providers.gemini = value.to_string();
+                    Ok("gemini key updated".to_string())
+                }
+                "hf" | "huggingface" => {
+                    cur.providers.hf = value.to_string();
+                    Ok("huggingface key updated".to_string())
+                }
+                "model" => {
+                    cur.local.model_path = value.to_string();
+                    Ok(format!("local model path set to: {value}"))
+                }
                 "budget" => match value.parse::<f64>() {
-                    Ok(n) => { cur.cost.daily_budget_usd = n; Ok(format!("daily budget set to ${n:.2}")) }
+                    Ok(n) => {
+                        cur.cost.daily_budget_usd = n;
+                        Ok(format!("daily budget set to ${n:.2}"))
+                    }
                     Err(_) => Err(format!("invalid budget value: {value}")),
                 },
-                other => Err(format!("Unknown setting: {other}. Use groq|anthropic|gemini|hf|model|budget")),
+                other => Err(format!(
+                    "Unknown setting: {other}. Use groq|anthropic|gemini|hf|model|budget"
+                )),
             };
             match result {
                 Ok(msg) => match save_config(&cur) {
-                    Ok(_) => println!("{msg}\\n"),
-                    Err(e) => println!("Failed to save settings: {e}\\n"),
+                    Ok(_) => {
+                        // Apply immediately — without this, a changed key/budget/model
+                        // only takes effect after restarting the session.
+                        local.set_model(cur.local.model_path.clone(), cur.local.max_context_size);
+                        config = cur;
+                        println!("{}\n", theme::green(&msg))
+                    }
+                    Err(e) => {
+                        println!("{}\n", theme::red(&format!("Failed to save settings: {e}")))
+                    }
                 },
-                Err(e) => println!("{e}\\n"),
+                Err(e) => println!("{}\n", theme::red(&e)),
             }
             continue;
         }
         if let Some(rest) = input.strip_prefix("/provider ") {
             let new_p = rest.trim().to_lowercase();
-            match new_p.as_str() {
-                "local" | "groq" | "anthropic" | "gemini" | "huggingface" | "hf" => {
-                    let picked = if new_p == "hf" { "huggingface".to_string() } else { new_p };
+            match new_p.parse::<RouteProvider>() {
+                Ok(route_provider) => {
+                    let picked = route_provider.as_str().to_string();
                     provider_override = Some(picked.clone());
-                    println!("Next message only will use: {picked} (auto-routing resumes after)\\n");
+                    println!("Next message only will use: {picked} (auto-routing resumes after)\n");
                 }
-                _ => println!("Unknown provider: {rest}. Use groq|anthropic|gemini|hf|local\\n"),
+                Err(_) => {
+                    println!(
+                        "{}\n",
+                        theme::yellow(&format!(
+                            "Unknown provider: {rest}. Use groq|anthropic|gemini|hf|local"
+                        ))
+                    )
+                }
             }
             continue;
         }
         if input == "/provider" {
-            let cur = get_config().unwrap_or_default();
             println!("1. local");
             println!("2. cloud");
             println!("3. add new (set a key for an unconfigured provider)");
-            print!("> ");
+            print!("{} ", theme::cyan(">"));
             std::io::stdout().flush()?;
             let mut choice = String::new();
-            if std::io::stdin().read_line(&mut choice)? == 0 { continue; }
-            println!("you picked: {}", choice.trim());
-            let _ = cur;
+            if std::io::stdin().read_line(&mut choice)? == 0 {
+                continue;
+            }
+            match choice.trim() {
+                "1" => {
+                    let models = list_local_models(&config.local.model_path);
+                    if models.is_empty() {
+                        println!("No .gguf files found next to {}\n", config.local.model_path);
+                        continue;
+                    }
+                    for (i, m) in models.iter().enumerate() {
+                        let current = m.to_str() == Some(config.local.model_path.as_str());
+                        println!(
+                            "  {}. {}{}",
+                            i + 1,
+                            m.file_name().unwrap_or_default().to_string_lossy(),
+                            if current { "  (current)" } else { "" }
+                        );
+                    }
+                    print!("{} ", theme::cyan(">"));
+                    std::io::stdout().flush()?;
+                    let mut pick = String::new();
+                    if std::io::stdin().read_line(&mut pick)? == 0 {
+                        continue;
+                    }
+                    match pick.trim().parse::<usize>() {
+                        Ok(n) if n >= 1 && n <= models.len() => {
+                            let chosen = &models[n - 1];
+                            let mut cur = get_config().unwrap_or_default();
+                            cur.local.model_path = chosen.to_string_lossy().to_string();
+                            if let Some(stem) = chosen.file_stem() {
+                                cur.local.model_name = stem.to_string_lossy().to_string();
+                            }
+                            match save_config(&cur) {
+                                Ok(_) => {
+                                    local.set_model(
+                                        cur.local.model_path.clone(),
+                                        cur.local.max_context_size,
+                                    );
+                                    println!(
+                                        "{}\n",
+                                        theme::green(&format!(
+                                            "Local model switched to: {}",
+                                            cur.local.model_path
+                                        ))
+                                    );
+                                    config = cur;
+                                }
+                                Err(e) => println!(
+                                    "{}\n",
+                                    theme::red(&format!("Failed to save settings: {e}"))
+                                ),
+                            }
+                        }
+                        _ => println!("{}\n", theme::yellow("Cancelled — no valid selection.")),
+                    }
+                }
+                "2" => {
+                    println!("  1. groq        — {}", mask_secret(&config.providers.groq));
+                    println!(
+                        "  2. anthropic   — {}",
+                        mask_secret(&config.providers.anthropic)
+                    );
+                    println!(
+                        "  3. gemini      — {}",
+                        mask_secret(&config.providers.gemini)
+                    );
+                    println!("  4. huggingface — {}", mask_secret(&config.providers.hf));
+                    print!("{} ", theme::cyan(">"));
+                    std::io::stdout().flush()?;
+                    let mut pick = String::new();
+                    if std::io::stdin().read_line(&mut pick)? == 0 {
+                        continue;
+                    }
+                    let picked = match pick.trim() {
+                        "1" => Some("groq"),
+                        "2" => Some("anthropic"),
+                        "3" => Some("gemini"),
+                        "4" => Some("huggingface"),
+                        _ => None,
+                    };
+                    match picked {
+                        Some(p) => {
+                            provider_override = Some(p.to_string());
+                            println!(
+                                "Next message only will use: {p} (auto-routing resumes after)\n"
+                            );
+                        }
+                        None => println!("{}\n", theme::yellow("Cancelled — no valid selection.")),
+                    }
+                }
+                "3" => {
+                    print!("Provider to add a key for (groq|anthropic|gemini|hf): ");
+                    std::io::stdout().flush()?;
+                    let mut name = String::new();
+                    if std::io::stdin().read_line(&mut name)? == 0 {
+                        continue;
+                    }
+                    let name = name.trim().to_lowercase();
+                    if !matches!(
+                        name.as_str(),
+                        "groq" | "anthropic" | "gemini" | "hf" | "huggingface"
+                    ) {
+                        println!(
+                            "{}\n",
+                            theme::yellow(&format!(
+                                "Unknown provider: {name}. Use groq|anthropic|gemini|hf"
+                            ))
+                        );
+                        continue;
+                    }
+                    print!("API key for {name}: ");
+                    std::io::stdout().flush()?;
+                    let mut key = String::new();
+                    if std::io::stdin().read_line(&mut key)? == 0 {
+                        continue;
+                    }
+                    let key = key.trim().to_string();
+                    let mut cur = get_config().unwrap_or_default();
+                    match name.as_str() {
+                        "groq" => cur.providers.groq = key,
+                        "anthropic" => cur.providers.anthropic = key,
+                        "gemini" => cur.providers.gemini = key,
+                        _ => cur.providers.hf = key,
+                    }
+                    match save_config(&cur) {
+                        Ok(_) => {
+                            config = cur;
+                            println!("{}\n", theme::green(&format!("{name} key saved.")));
+                        }
+                        Err(e) => {
+                            println!("{}\n", theme::red(&format!("Failed to save settings: {e}")))
+                        }
+                    }
+                }
+                other => println!("{}\n", theme::yellow(&format!("Unknown option: {other}"))),
+            }
             continue;
         }
 
@@ -378,95 +639,218 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
             continue;
         }
 
-        let (provider, route_reason) = if let Some(p) = provider_override.take() {
+        let (provider, route_reason, is_override) = if let Some(p) = provider_override.take() {
             let r = format!("manual override: /provider {p}");
-            (p, r)
+            (p, r, true)
         } else {
             let route = decide_route(&input, &config.routing);
-            let p = match route.provider {
-                RouteProvider::Groq => "groq",
-                RouteProvider::Anthropic => "anthropic",
-                RouteProvider::Gemini => "gemini",
-                RouteProvider::HuggingFace => "huggingface",
-                RouteProvider::Local => "local",
-            }.to_string();
-            (p, route.reason)
+            (route.provider.as_str().to_string(), route.reason, false)
         };
-        println!("[{provider}] {route_reason}");
+        println!("{}", theme::dim(&format!("[{provider}] {route_reason}")));
 
-        let result = if provider == "local" {
-            let mut out = std::io::stdout();
-            run_local(&input, &mut local_engine, &config.local.model_path, |piece| {
-                print!("{piece}");
-                let _ = out.flush();
-            })
-        } else {
-            execute_provider(&provider, &input, &mut local_engine, &config, &rt_handle)
+        let mut out = std::io::stdout();
+        let on_token = |piece: &str| {
+            print!("{piece}");
+            let _ = out.flush();
         };
+        // An explicit /provider override gets exactly that provider (or a
+        // clear error) — never a silent substitute. Auto-routing gets the
+        // full fallback chain.
+        let (served_by, result) = if is_override {
+            let r = rt_handle.block_on(dispatch_provider(
+                &provider, &input, &config, &mut local, on_token,
+            ));
+            (provider.clone(), r)
+        } else {
+            rt_handle.block_on(dispatch_with_fallback(
+                &provider,
+                &config.routing.cloud_fallback_order,
+                &input,
+                &config,
+                &mut local,
+                on_token,
+            ))
+        };
+        if served_by != provider {
+            println!(
+                "\n{}",
+                theme::yellow(&format!(
+                    "[fallback] {served_by} (originally routed to {provider})"
+                ))
+            );
+        }
 
         match result {
-            Ok((content, tokens, cost)) => {
-                if provider != "local" {
-                    println!("{}", sanitize_terminal_text(&content));
+            Ok(resp) => {
+                if served_by != "local" {
+                    println!("{}", sanitize_terminal_text(&resp.content));
                 }
                 println!();
-                total_tokens += tokens as u64;
+                let served_provider: RouteProvider = served_by
+                    .parse()
+                    .expect("served_by always comes from RouteProvider::as_str() or validated /provider input");
+                let cost = buzz_core::calculate_cost(
+                    resp.input_tokens,
+                    resp.output_tokens,
+                    served_provider,
+                );
+                let tokens = resp.input_tokens + resp.output_tokens;
+                total_tokens += tokens;
                 total_spend += cost;
-                println!("({tokens} tokens · ${cost:.6} this reply · {total_tokens} tokens · ${total_spend:.6} total)\n");
-                cache.insert(input.clone(), (sanitize_terminal_text(&content), tokens, cost));
+                let (_, privacy_flags) = buzz_core::analyze_privacy(&input);
+                buzz_core::audit::log_route(
+                    &config.audit,
+                    &served_by,
+                    &route_reason,
+                    &privacy_flags,
+                    resp.input_tokens,
+                    resp.output_tokens,
+                    cost,
+                );
+                let speed = resp.tokens_per_second();
+                let secs = resp.elapsed_ms / 1000.0;
+                println!(
+                    "({tokens} tokens · ${cost:.6} this reply · {speed:.1} tok/s · {secs:.2}s · {total_tokens} tokens · ${total_spend:.6} total)\n"
+                );
+                cache.insert(
+                    input.clone(),
+                    (sanitize_terminal_text(&resp.content), tokens as usize, cost),
+                );
             }
             Err(e) => {
-                println!("Error: {}\\n", sanitize_terminal_text(&format!("{e}")));
+                println!(
+                    "{}\n",
+                    theme::red(&format!(
+                        "Error: {}",
+                        sanitize_terminal_text(&format!("{e}"))
+                    ))
+                );
             }
         }
     }
 
-    println!("\\n  Buzz — Session Summary");
-    println!("  Tokens: {total_tokens} | Spent: ${total_spend:.6}\\n");
+    println!("\n  {}", theme::bold("Buzz — Session Summary"));
+    println!("  Tokens: {total_tokens} | Spent: ${total_spend:.6}\n");
 
     Ok(())
 }
 
 fn select_provider_name(override_opt: &Option<String>) -> String {
-    override_opt.as_ref()
+    override_opt
+        .as_ref()
         .map(|s| s.to_lowercase())
         .or_else(|| std::env::var("PROVIDER").ok())
         .unwrap_or_else(|| "groq".to_string())
 }
 
-fn save_config(config: &Config) -> Result<(), Box<dyn Error>> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let path = format!("{}/.buzz/config.toml", home);
-    
-    if let Some(parent) = std::path::Path::new(&path).parent() {
-        std::fs::create_dir_all(parent)?;
+fn mask_secret(s: &str) -> String {
+    if s.is_empty() {
+        "(not set)".to_string()
+    } else {
+        format!("set ({} chars)", s.len())
     }
+}
 
-    let content = format!(
-        "# Buzz CLI Configuration\n\
-        [providers]\ngroq = \"{}\"\nanthropic = \"{}\"\ngemini = \"{}\"\nhf = \"{}\"\n\n\
-        [routing]\nalways_local_if_sensitive = true\ncloud_fallback_order = [\"groq\"]\n\n\
-        [local]\nmodel_path = \"{}\"\nmodel_name = \"{}\"\n\n\
-        [cost]\ndaily_budget_usd = {}\n\n\
-        [audit]\nenabled = true\n",
-        config.providers.groq,
-        config.providers.anthropic,
-        config.providers.gemini,
-        config.providers.hf,
-        config.local.model_path,
-        config.local.model_name,
-        config.cost.daily_budget_usd
+/// Prints the audit trail as an actual feature — a summary plus the most
+/// recent requests — instead of it only existing as a JSONL file you'd
+/// have to know to go find and grep yourself.
+fn print_audit(config: &buzz_core::policy::AuditConfig) {
+    if !config.enabled {
+        println!("Audit logging is disabled (audit.enabled = false in config.toml).\n");
+        return;
+    }
+    let summary = buzz_core::audit::summarize(config);
+    if summary.total_requests == 0 {
+        println!("No audit entries yet — logged at {}\n", config.log_path);
+        return;
+    }
+    let now = buzz_core::audit::now_unix();
+    let span = match (summary.earliest_timestamp, summary.latest_timestamp) {
+        (Some(earliest), Some(latest)) => format!(
+            "{} — {}",
+            buzz_core::audit::relative_time(now, earliest),
+            buzz_core::audit::relative_time(now, latest)
+        ),
+        _ => "unknown".to_string(),
+    };
+    println!("Audit — {} requests ({})", summary.total_requests, span);
+    println!(
+        "  Local: {} | Cloud: {} | Sensitive-flagged: {} | Total spend: ${:.6}",
+        summary.local_count, summary.cloud_count, summary.sensitive_count, summary.total_cost
     );
-
-    std::fs::write(&path, &content)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    println!("  Log: {}", config.log_path);
+    match buzz_core::audit::verify_chain(config) {
+        buzz_core::audit::ChainStatus::Verified {
+            chained_count,
+            legacy_count,
+        } => {
+            if legacy_count > 0 {
+                println!(
+                    "  {}",
+                    theme::green(&format!(
+                        "Integrity: OK — {chained_count} hash-chained entries intact ({legacy_count} older entries predate chaining, unverifiable)"
+                    ))
+                );
+            } else {
+                println!(
+                    "  {}",
+                    theme::green(&format!(
+                        "Integrity: OK — all {chained_count} entries hash-chained and intact"
+                    ))
+                );
+            }
+        }
+        buzz_core::audit::ChainStatus::Broken { at_line, reason } => {
+            println!(
+                "  {}",
+                theme::red(&format!("Integrity: BROKEN — entry {at_line}: {reason}"))
+            );
+        }
+        buzz_core::audit::ChainStatus::Empty => {}
     }
+    println!("\n  Recent:");
+    for entry in buzz_core::audit::recent(config, 10) {
+        let when = buzz_core::audit::relative_time(now, entry.timestamp);
+        let flags = if entry.privacy_flags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", entry.privacy_flags.join(", "))
+        };
+        println!(
+            "    {:<8} [{:<10}] {} — ${:.6}{}",
+            when, entry.provider, entry.reason, entry.cost_usd, flags
+        );
+    }
+    println!();
+}
 
-    Ok(())
+/// GGUF model files sitting next to the currently configured model, sorted
+/// by filename. This is the browsable list `/provider` offers instead of
+/// requiring the full path via `/settings model <path>`.
+fn list_local_models(current_model_path: &str) -> Vec<std::path::PathBuf> {
+    let dir = std::path::Path::new(current_model_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut models: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("gguf"))
+        .collect();
+    models.sort();
+    models
+}
+
+fn save_config(config: &Config) -> Result<(), Box<dyn Error>> {
+    // Always round-trip through serde (Config::save_to_file), never hand-build
+    // the TOML text — a hand-rolled writer here previously dropped fields
+    // (max_context_size, max_per_request_usd, log_path) that strict parsing
+    // then required, which is exactly what caused the local-model-path bug.
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let path = std::path::PathBuf::from(format!("{}/.buzz/config.toml", home));
+    config.save_to_file(&path)
 }
 
 fn get_config() -> Result<Config, Box<dyn Error>> {
@@ -475,8 +859,63 @@ fn get_config() -> Result<Config, Box<dyn Error>> {
     match Config::load_from_file(&path) {
         Ok(cfg) => Ok(cfg),
         Err(e) => {
-            eprintln!("[buzz] warning: could not load config ({}): {}", path.display(), e);
+            eprintln!(
+                "[buzz] warning: could not load config ({}): {}",
+                path.display(),
+                e
+            );
             Ok(Config::default())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mask_secret_reports_presence_without_leaking_value() {
+        assert_eq!(mask_secret(""), "(not set)");
+        let masked = mask_secret("sk-supersecret");
+        assert_eq!(masked, "set (14 chars)");
+        assert!(!masked.contains("supersecret"));
+    }
+
+    #[test]
+    fn list_local_models_finds_only_gguf_files_sorted() {
+        let dir = std::env::temp_dir().join(format!(
+            "buzz-model-list-test-{:?}",
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("z-model.gguf"), b"").unwrap();
+        std::fs::write(dir.join("a-model.gguf"), b"").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"").unwrap();
+
+        let current = dir.join("z-model.gguf");
+        let models = list_local_models(current.to_str().unwrap());
+
+        assert_eq!(models.len(), 2);
+        assert!(models[0].to_string_lossy().contains("a-model.gguf"));
+        assert!(models[1].to_string_lossy().contains("z-model.gguf"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_local_models_empty_dir_returns_empty() {
+        let dir = std::env::temp_dir().join(format!(
+            "buzz-model-list-empty-test-{:?}",
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let current = dir.join("nonexistent.gguf");
+        let models = list_local_models(current.to_str().unwrap());
+        assert!(models.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
