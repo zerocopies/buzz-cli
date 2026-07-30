@@ -180,22 +180,22 @@ fn run_setup_wizard() -> Result<(), Box<dyn Error>> {
     std::io::stdout().flush()?;
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
-    config.groq_api_key = Some(input.trim().to_string());
+    config.providers.groq = input.trim().to_string();
 
     print!("Anthropic API key (Enter to skip): ");
     input.clear(); std::io::stdout().flush()?;
     std::io::stdin().read_line(&mut input)?;
-    config.anthropic_api_key = Some(input.trim().to_string());
+    config.providers.anthropic = input.trim().to_string();
 
     print!("Gemini API key (Enter to skip): ");
     input.clear(); std::io::stdout().flush()?;
     std::io::stdin().read_line(&mut input)?;
-    config.gemini_api_key = Some(input.trim().to_string());
+    config.providers.gemini = input.trim().to_string();
 
     print!("HuggingFace API key (Enter to skip): ");
     input.clear(); std::io::stdout().flush()?;
     std::io::stdin().read_line(&mut input)?;
-    config.hf_api_key = Some(input.trim().to_string());
+    config.providers.hf = input.trim().to_string();
 
     print!("\nDaily budget USD (default $5.00): ");
     input.clear(); std::io::stdout().flush()?;
@@ -356,6 +356,19 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
             }
             continue;
         }
+        if input == "/provider" {
+            let cur = get_config().unwrap_or_default();
+            println!("1. local");
+            println!("2. cloud");
+            println!("3. add new (set a key for an unconfigured provider)");
+            print!("> ");
+            std::io::stdout().flush()?;
+            let mut choice = String::new();
+            if std::io::stdin().read_line(&mut choice)? == 0 { continue; }
+            println!("you picked: {}", choice.trim());
+            let _ = cur;
+            continue;
+        }
 
         if let Some((cached_reply, cached_tokens, _)) = cache.get(&input) {
             println!("[cached] repeated question — reusing earlier answer, no cost");
@@ -458,24 +471,12 @@ fn save_config(config: &Config) -> Result<(), Box<dyn Error>> {
 
 fn get_config() -> Result<Config, Box<dyn Error>> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let path = format!("{}/.buzz/config.toml", home);
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-
-    let mut config = Config::default();
-    for line in content.lines() {
-        if let Some((key, val)) = line.split_once('=') {
-            match key.trim() {
-                "groq_api_key" => config.providers.groq = val.trim().trim_matches('"').to_string(),
-                "anthropic_api_key" => config.providers.anthropic = val.trim().trim_matches('"').to_string(),
-                "gemini_api_key" => config.providers.gemini = val.trim().trim_matches('"').to_string(),
-                "hf_api_key" => config.providers.hf = val.trim().trim_matches('"').to_string(),
-                "huggingface_api_key" => config.providers.hf = val.trim().trim_matches('"').to_string(),
-                "daily_budget_usd" => config.cost.daily_budget_usd = val.trim().parse().unwrap_or(5.0),
-                "model_path" => config.local.model_path = val.trim().trim_matches('"').to_string(),
-                _ => {}
-            }
+    let path = std::path::PathBuf::from(format!("{}/.buzz/config.toml", home));
+    match Config::load_from_file(&path) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            eprintln!("[buzz] warning: could not load config ({}): {}", path.display(), e);
+            Ok(Config::default())
         }
     }
-
-    Ok(config)
 }

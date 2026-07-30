@@ -33,8 +33,20 @@ impl Default for Providers {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingConfig {
+    #[serde(default = "RoutingConfig::default_always_local_if_sensitive")]
     pub always_local_if_sensitive: bool,
+    #[serde(default = "RoutingConfig::default_cloud_fallback_order")]
     pub cloud_fallback_order: Vec<String>,
+}
+
+impl RoutingConfig {
+    fn default_always_local_if_sensitive() -> bool {
+        true
+    }
+
+    fn default_cloud_fallback_order() -> Vec<String> {
+        vec!["groq".to_string()]
+    }
 }
 
 impl Default for RoutingConfig {
@@ -48,8 +60,20 @@ impl Default for RoutingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostConfig {
+    #[serde(default = "CostConfig::default_max_per_request_usd")]
     pub max_per_request_usd: f64,
+    #[serde(default = "CostConfig::default_daily_budget_usd")]
     pub daily_budget_usd: f64,
+}
+
+impl CostConfig {
+    fn default_max_per_request_usd() -> f64 {
+        0.01
+    }
+
+    fn default_daily_budget_usd() -> f64 {
+        5.0
+    }
 }
 
 impl Default for CostConfig {
@@ -63,9 +87,26 @@ impl Default for CostConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalConfig {
+    #[serde(default = "LocalConfig::default_model_path")]
     pub model_path: String,
+    #[serde(default = "LocalConfig::default_model_name")]
     pub model_name: String,
+    #[serde(default = "LocalConfig::default_max_context_size")]
     pub max_context_size: usize,
+}
+
+impl LocalConfig {
+    fn default_model_path() -> String {
+        "~/.buzz/models/qwen2.5-1.5b-instruct-q4_k_m.gguf".to_string()
+    }
+
+    fn default_model_name() -> String {
+        "qwen2.5-1.5b-instruct".to_string()
+    }
+
+    fn default_max_context_size() -> usize {
+        4096
+    }
 }
 
 impl Default for LocalConfig {
@@ -80,8 +121,20 @@ impl Default for LocalConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditConfig {
+    #[serde(default = "AuditConfig::default_enabled")]
     pub enabled: bool,
+    #[serde(default = "AuditConfig::default_log_path")]
     pub log_path: String,
+}
+
+impl AuditConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_log_path() -> String {
+        "~/.buzz/audit.jsonl".to_string()
+    }
 }
 
 impl Default for AuditConfig {
@@ -101,10 +154,15 @@ pub struct Config {
     pub hf_api_key: Option<String>,
     pub budget_limit: Option<f64>,
     pub default_provider: Option<String>,
+    #[serde(default)]
     pub providers: Providers,
+    #[serde(default)]
     pub routing: RoutingConfig,
+    #[serde(default)]
     pub cost: CostConfig,
+    #[serde(default)]
     pub local: LocalConfig,
+    #[serde(default)]
     pub audit: AuditConfig,
 }
 
