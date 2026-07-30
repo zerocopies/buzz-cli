@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # buzz-cli's qfz3 dependency is a git dependency pinned to a commit on
+  # github.com/zerocopies/qfz3 (see buzz-cli/Cargo.toml) — no more path
+  # dependency pointing outside this repo, so the whole workspace resolves
+  # and builds in a fresh checkout, including here.
+  workspace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
