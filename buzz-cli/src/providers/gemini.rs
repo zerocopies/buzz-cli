@@ -5,7 +5,12 @@ use std::error::Error;
 use super::sse::for_each_sse_data;
 use buzz_core::{InferenceProvider, ProviderResponse};
 
-const DEFAULT_MODEL: &str = "gemini-1.5-flash";
+// gemini-1.5-flash (the original default here) has been fully retired —
+// confirmed live against /v1beta/models, a 404 even with a valid key.
+// Using the "-latest" alias instead of a dated snapshot this time, so it
+// tracks Google's current fast/cheap tier automatically instead of going
+// stale the same way again.
+const DEFAULT_MODEL: &str = "gemini-flash-latest";
 
 pub struct GeminiProvider {
     client: Client,

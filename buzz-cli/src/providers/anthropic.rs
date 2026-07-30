@@ -6,7 +6,11 @@ use super::sse::for_each_sse_data;
 use buzz_core::{InferenceProvider, ProviderResponse};
 
 const ANTHROPIC_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
-const DEFAULT_MODEL: &str = "claude-3-5-haiku-20241022";
+// claude-3-5-haiku-20241022 (the original default here) has been fully
+// retired — confirmed live against /v1/models, it's no longer in the
+// account's available model list at all. This is the current fast/cheap
+// tier's equivalent.
+const DEFAULT_MODEL: &str = "claude-haiku-4-5-20251001";
 
 pub struct AnthropicProvider {
     client: Client,
