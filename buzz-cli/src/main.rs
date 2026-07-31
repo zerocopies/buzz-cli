@@ -957,4 +957,78 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn require_key_rejects_empty_string() {
+        let err = require_key("", "groq_api_key").unwrap_err();
+        assert!(err.to_string().contains("No API key configured"));
+        assert!(err.to_string().contains("groq_api_key"));
+    }
+
+    #[test]
+    fn require_key_rejects_whitespace_only() {
+        assert!(require_key("   ", "anthropic_api_key").is_err());
+    }
+
+    #[test]
+    fn require_key_accepts_and_returns_a_real_key() {
+        let key = require_key("sk-real-value", "hf_api_key").unwrap();
+        assert_eq!(key, "sk-real-value");
+    }
+
+    #[test]
+    fn sanitize_terminal_text_keeps_newlines_and_tabs() {
+        let out = sanitize_terminal_text("line one\nline\ttwo");
+        assert_eq!(out, "line one\nline\ttwo");
+    }
+
+    #[test]
+    fn sanitize_terminal_text_strips_escape_and_control_chars() {
+        let out = sanitize_terminal_text("hello\x1b[31mworld\x07");
+        assert_eq!(out, "hello[31mworld");
+    }
+
+    #[test]
+    fn sanitize_terminal_text_leaves_plain_text_untouched() {
+        let out = sanitize_terminal_text("The capital of France is Paris.");
+        assert_eq!(out, "The capital of France is Paris.");
+    }
+
+    #[test]
+    fn select_provider_name_uses_override_when_present() {
+        let picked = select_provider_name(&Some("Anthropic".to_string()));
+        assert_eq!(picked, "anthropic");
+    }
+
+    #[test]
+    fn select_provider_name_falls_back_to_groq_when_nothing_set() {
+        let prior = std::env::var("PROVIDER").ok();
+        std::env::remove_var("PROVIDER");
+        let picked = select_provider_name(&None);
+        assert_eq!(picked, "groq");
+        if let Some(v) = prior { std::env::set_var("PROVIDER", v); }
+    }
+
+    #[test]
+    fn check_budget_allows_local_regardless_of_config() {
+        let mut config = Config::default();
+        config.cost.max_per_request_usd = 0.0;
+        config.cost.daily_budget_usd = 0.0;
+        assert!(check_budget(&config, RouteProvider::Local, "anything at all").is_ok());
+    }
+
+    #[test]
+    fn check_budget_blocks_when_per_request_limit_is_effectively_zero() {
+        let mut config = Config::default();
+        config.cost.max_per_request_usd = 0.0;
+        let result = check_budget(&config, RouteProvider::Groq, "a normal length prompt");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().len() > 0);
+    }
+
+    #[test]
+    fn check_budget_allows_a_normal_prompt_under_default_limits() {
+        let config = Config::default();
+        assert!(check_budget(&config, RouteProvider::Groq, "hi").is_ok());
+    }
 }
