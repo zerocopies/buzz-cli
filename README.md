@@ -171,7 +171,7 @@ buzz-cli/
 └── Cargo.toml      — workspace root
 ```
 
-Buzz's local inference runs on [qfz3](../qfz3), a separate zero-copy inference engine (model weights are memory-mapped, not copied into memory) that Buzz depends on for on-device generation.
+Buzz's local inference runs on [qfz3](https://github.com/zerocopies/qfz3), a separate zero-copy inference engine (model weights are memory-mapped, not copied into memory) that Buzz depends on for on-device generation.
 
 ---
 
