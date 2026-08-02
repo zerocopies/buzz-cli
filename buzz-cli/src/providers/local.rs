@@ -41,12 +41,18 @@ impl LocalProvider {
     }
 }
 
-impl InferenceProvider for LocalProvider {
-    async fn generate(
+impl LocalProvider {
+    /// Synchronous form of `generate` — identical behavior, callable from a
+    /// plain blocking context (e.g. inside `tokio::task::spawn_blocking`)
+    /// with no async machinery involved. There's no real `.await` in
+    /// either path — `qfz3::Engine::generate_streaming` is itself fully
+    /// synchronous; the trait impl below just wraps this in `async fn` for
+    /// uniformity with the cloud providers.
+    pub fn generate_blocking(
         &mut self,
         prompt: &str,
         on_token: &mut dyn FnMut(&str),
-    ) -> Result<ProviderResponse, Box<dyn Error>> {
+    ) -> Result<ProviderResponse, Box<dyn Error + Send + Sync>> {
         if self.engine.is_none() {
             self.engine = Some(qfz3::Engine::load(
                 &self.model_path,
@@ -62,5 +68,15 @@ impl InferenceProvider for LocalProvider {
             output_tokens: out.completion_tokens as u64,
             elapsed_ms: out.prompt_ms + out.generate_ms,
         })
+    }
+}
+
+impl InferenceProvider for LocalProvider {
+    async fn generate(
+        &mut self,
+        prompt: &str,
+        on_token: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<ProviderResponse, Box<dyn Error + Send + Sync>> {
+        self.generate_blocking(prompt, on_token)
     }
 }

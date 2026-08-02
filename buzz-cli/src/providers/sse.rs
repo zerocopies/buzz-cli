@@ -42,7 +42,7 @@ fn feed(buf: &mut String, bytes: &[u8]) -> Vec<SseLine> {
 pub async fn for_each_sse_data(
     response: Response,
     mut on_data: impl FnMut(&str) -> bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut stream = response.bytes_stream();
     let mut buf = String::new();
     while let Some(chunk) = stream.next().await {

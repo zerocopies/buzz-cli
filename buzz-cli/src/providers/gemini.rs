@@ -32,8 +32,8 @@ impl InferenceProvider for GeminiProvider {
     async fn generate(
         &mut self,
         prompt: &str,
-        on_token: &mut dyn FnMut(&str),
-    ) -> Result<ProviderResponse, Box<dyn Error>> {
+        on_token: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<ProviderResponse, Box<dyn Error + Send + Sync>> {
         // streamGenerateContent + alt=sse is Gemini's documented streaming
         // endpoint — same request body as generateContent, different path
         // suffix and an SSE response instead of one JSON blob.

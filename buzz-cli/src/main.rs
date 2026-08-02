@@ -1,4 +1,3 @@
-mod providers;
 mod theme;
 
 use buzz_core::policy::Config;
@@ -6,10 +5,31 @@ use clap::Parser;
 use std::error::Error;
 use std::io::Write;
 
-use buzz_core::{decide_route, InferenceProvider, ProviderResponse, RouteProvider};
-use providers::{
+use buzz_cli::providers::{
     AnthropicProvider, GeminiProvider, GroqProvider, HuggingFaceProvider, LocalProvider,
 };
+use buzz_core::{decide_route, scan_text, InferenceProvider, ProviderResponse, RouteProvider};
+
+/// `caller` value for every audit entry buzz-cli itself writes — as
+/// opposed to buzz-gateway's, which carry a real caller identity from
+/// `X-Buzz-Client`/the request body (see buzz-gateway/src/caller.rs).
+/// buzz-cli has no such concept (it's the single local user driving the
+/// process directly), so a constant is the honest answer rather than
+/// inventing per-call attribution that doesn't exist.
+const CLI_CALLER: &str = "cli";
+
+/// Per-call correlation ID for buzz-cli's own audit entries, mirroring
+/// buzz-gateway's `chatcmpl-<uuid>` request IDs without pulling in the
+/// `uuid` crate just for this — buzz-cli has no concurrent requests to
+/// disambiguate (one process, one request in flight at a time), so
+/// nanosecond-resolution uniqueness is already more than this needs.
+fn generate_request_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("cli-{nanos}")
+}
 
 #[derive(Parser)]
 #[command(
@@ -18,6 +38,9 @@ use providers::{
     about = "Multi-provider AI CLI with privacy-first local routing"
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     prompt: Option<String>,
 
     #[arg(long)]
@@ -30,8 +53,63 @@ struct Cli {
     show_routing: bool,
 }
 
+#[derive(clap::Subcommand)]
+enum Commands {
+    /// Run buzz-gateway, the loopback-only OpenAI-compatible HTTP server
+    /// (deck slide 02: "an IT team deploys it machine-wide" via
+    /// `buzz-cli serve -port 8787`). See `run_serve` for why this execs a
+    /// sibling binary instead of calling gateway code directly.
+    Serve {
+        /// buzz-gateway still hardcodes the 127.0.0.1 bind address itself
+        /// (see buzz-gateway/src/main.rs) — only the port is configurable
+        /// here.
+        #[arg(short, long, default_value_t = 8787)]
+        port: u16,
+    },
+    /// Compliance-report export/verify (deck slide 08: "sha256:
+    /// 8f21…c04a — signed by fleet key #003"). Signed with an Ed25519
+    /// keypair buzz-cli generates and persists itself on first use
+    /// (~/.buzz/audit_signing.key / .pub) — see buzz-core/src/signing.rs
+    /// for why this is net-new key material, not a reuse of any
+    /// existing vault infrastructure.
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommands,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum AuditCommands {
+    /// Summarize and sign every audit-log entry in [--from, --to]
+    /// (inclusive UTC calendar days), after verifying the whole log's
+    /// hash chain is intact. Refuses to sign if the chain is broken.
+    Export {
+        /// Start date, inclusive, UTC — YYYY-MM-DD.
+        #[arg(long)]
+        from: String,
+        /// End date, inclusive, UTC — YYYY-MM-DD.
+        #[arg(long)]
+        to: String,
+        /// Write the signed report here instead of stdout.
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Check a report file's signature against its own contents —
+    /// confirms it hasn't been edited since `export` signed it.
+    Verify {
+        /// Path to a report file produced by `audit export`.
+        #[arg(long)]
+        report: String,
+        /// Public key to verify against (hex file). Defaults to
+        /// ~/.buzz/audit_signing.pub — override this to check a report
+        /// signed on a different machine/key.
+        #[arg(long)]
+        pubkey: Option<String>,
+    },
+}
+
 /// A configured key is required for every cloud provider; local needs none.
-fn require_key<'a>(key: &'a str, key_name: &str) -> Result<&'a str, Box<dyn Error>> {
+fn require_key<'a>(key: &'a str, key_name: &str) -> Result<&'a str, Box<dyn Error + Send + Sync>> {
     if key.trim().is_empty() {
         Err(
             format!("No API key configured ({key_name}). Run --setup or edit ~/.buzz/config.toml.")
@@ -42,22 +120,23 @@ fn require_key<'a>(key: &'a str, key_name: &str) -> Result<&'a str, Box<dyn Erro
     }
 }
 
-/// Pre-flight budget guard for a cloud call — checked uniformly for every
+/// Pre-flight budget guard for a cloud call — reserved uniformly for every
 /// cloud provider (including explicit /provider overrides, not just
 /// auto-routed requests) so the budget can't be bypassed just by naming a
-/// provider directly. Local is exempt inside `buzz_core::budget::check`.
-fn check_budget(
+/// provider directly. Local is exempt inside `buzz_core::budget::reserve`.
+///
+/// Returns the reservation the caller must resolve exactly once —
+/// `buzz_core::budget::commit` on success, `::release` on failure — so
+/// the daily cap reflects in-flight requests, not just already-logged
+/// ones (closes the check-then-act gap a plain read-only check leaves
+/// open under concurrent callers).
+fn reserve_budget(
     config: &Config,
     provider: RouteProvider,
     prompt: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Option<buzz_core::budget::Reservation>, Box<dyn Error + Send + Sync>> {
     let estimated = buzz_core::budget::estimate_cost(prompt, provider);
-    let result = buzz_core::budget::check(config, provider, estimated);
-    if result.is_ok() {
-        Ok(())
-    } else {
-        Err(result.to_string().into())
-    }
+    buzz_core::budget::reserve(config, provider, estimated).map_err(|e| e.to_string().into())
 }
 
 /// Single dispatch path for every provider, local or cloud — both TUI mode
@@ -72,37 +151,69 @@ async fn dispatch_provider(
     prompt: &str,
     config: &Config,
     local: &mut LocalProvider,
-    mut on_token: impl FnMut(&str),
-) -> Result<ProviderResponse, Box<dyn Error>> {
+    mut on_token: impl FnMut(&str) + Send,
+) -> Result<(ProviderResponse, Option<buzz_core::budget::Reservation>), Box<dyn Error + Send + Sync>>
+{
     match provider {
-        "local" => local.generate(prompt, &mut on_token).await,
+        "local" => local
+            .generate(prompt, &mut on_token)
+            .await
+            .map(|resp| (resp, None)),
         "groq" => {
             let key = require_key(&config.providers.groq, "groq_api_key")?;
-            check_budget(config, RouteProvider::Groq, prompt)?;
-            GroqProvider::new(key.to_string(), None)
+            let reservation = reserve_budget(config, RouteProvider::Groq, prompt)?;
+            match GroqProvider::new(key.to_string(), None)
                 .generate(prompt, &mut on_token)
                 .await
+            {
+                Ok(resp) => Ok((resp, reservation)),
+                Err(e) => {
+                    buzz_core::budget::release(reservation);
+                    Err(e)
+                }
+            }
         }
         "anthropic" => {
             let key = require_key(&config.providers.anthropic, "anthropic_api_key")?;
-            check_budget(config, RouteProvider::Anthropic, prompt)?;
-            AnthropicProvider::new(key.to_string(), None)
+            let reservation = reserve_budget(config, RouteProvider::Anthropic, prompt)?;
+            match AnthropicProvider::new(key.to_string(), None)
                 .generate(prompt, &mut on_token)
                 .await
+            {
+                Ok(resp) => Ok((resp, reservation)),
+                Err(e) => {
+                    buzz_core::budget::release(reservation);
+                    Err(e)
+                }
+            }
         }
         "gemini" => {
             let key = require_key(&config.providers.gemini, "gemini_api_key")?;
-            check_budget(config, RouteProvider::Gemini, prompt)?;
-            GeminiProvider::new(key.to_string(), None)
+            let reservation = reserve_budget(config, RouteProvider::Gemini, prompt)?;
+            match GeminiProvider::new(key.to_string(), None)
                 .generate(prompt, &mut on_token)
                 .await
+            {
+                Ok(resp) => Ok((resp, reservation)),
+                Err(e) => {
+                    buzz_core::budget::release(reservation);
+                    Err(e)
+                }
+            }
         }
         "huggingface" | "hf" => {
             let key = require_key(&config.providers.hf, "hf_api_key")?;
-            check_budget(config, RouteProvider::HuggingFace, prompt)?;
-            HuggingFaceProvider::new(key.to_string(), None)
+            let reservation = reserve_budget(config, RouteProvider::HuggingFace, prompt)?;
+            match HuggingFaceProvider::new(key.to_string(), None)
                 .generate(prompt, &mut on_token)
                 .await
+            {
+                Ok(resp) => Ok((resp, reservation)),
+                Err(e) => {
+                    buzz_core::budget::release(reservation);
+                    Err(e)
+                }
+            }
         }
         other => Err(format!("Unknown provider: {other}").into()),
     }
@@ -124,8 +235,11 @@ async fn dispatch_with_fallback(
     prompt: &str,
     config: &Config,
     local: &mut LocalProvider,
-    mut on_token: impl FnMut(&str),
-) -> (String, Result<ProviderResponse, Box<dyn Error>>) {
+    mut on_token: impl FnMut(&str) + Send,
+) -> (
+    String,
+    Result<(ProviderResponse, Option<buzz_core::budget::Reservation>), Box<dyn Error + Send + Sync>>,
+) {
     let mut attempts: Vec<String> = vec![initial.to_string()];
     for raw in fallback_order {
         let canonical = raw
@@ -185,6 +299,12 @@ fn sanitize_terminal_text(s: &str) -> String {
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
+    match cli.command {
+        Some(Commands::Serve { port }) => return run_serve(port),
+        Some(Commands::Audit { command }) => return run_audit_command(command),
+        None => {}
+    }
+
     if cli.setup {
         return run_setup_wizard();
     }
@@ -196,6 +316,155 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let provider = select_provider_name(&cli.provider);
     run_tui_mode(&provider, cli.show_routing)
+}
+
+/// `buzz-cli serve` — makes the deck's literal example command
+/// (`buzz-cli serve -port 8787`) a real, working invocation instead of
+/// something only reachable via `cargo run --bin buzz-gateway`.
+///
+/// This execs the `buzz-gateway` binary Cargo already builds as a
+/// sibling of `buzz-cli` in the same target directory, rather than
+/// calling gateway startup code directly — buzz-gateway's own Cargo.toml
+/// already depends on buzz-cli (for its provider clients:
+/// `buzz_cli::providers::{Groq,Anthropic,...}Provider`), so buzz-cli
+/// depending back on buzz-gateway would be a circular crate dependency.
+/// Shelling out to the sibling binary is the straightforward way around
+/// that without restructuring either crate.
+///
+/// On Unix this uses `exec`, which replaces this process's image outright
+/// instead of spawning a child and waiting on it — same PID, no wrapper
+/// process left babysitting a subprocess. That matters under systemd:
+/// the unit's `Restart=on-failure` (see buzz-gateway/dist/) needs to
+/// observe buzz-gateway's own exit status directly, not buzz-cli's.
+fn run_serve(port: u16) -> Result<(), Box<dyn Error>> {
+    let current_exe = std::env::current_exe()?;
+    let gateway_bin = current_exe
+        .parent()
+        .ok_or("could not determine buzz-cli's own directory")?
+        .join("buzz-gateway");
+
+    if !gateway_bin.is_file() {
+        return Err(format!(
+            "buzz-gateway binary not found at {} — build it alongside buzz-cli \
+             (`cargo build --release` from the workspace root builds both)",
+            gateway_bin.display()
+        )
+        .into());
+    }
+
+    // buzz-gateway's own bind address (127.0.0.1) is intentionally
+    // hardcoded and not configurable (see its main.rs) — only the port
+    // is threaded through here, via the same env var buzz-gateway reads
+    // directly when run standalone.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Only returns if exec itself fails (binary not executable, bad
+        // format, etc.) — on success this process becomes buzz-gateway.
+        let err = std::process::Command::new(&gateway_bin)
+            .env("BUZZ_GATEWAY_PORT", port.to_string())
+            .exec();
+        Err(format!("failed to exec {}: {err}", gateway_bin.display()).into())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = std::process::Command::new(&gateway_bin)
+            .env("BUZZ_GATEWAY_PORT", port.to_string())
+            .status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+fn run_audit_command(command: AuditCommands) -> Result<(), Box<dyn Error>> {
+    match command {
+        AuditCommands::Export { from, to, out } => run_audit_export(&from, &to, out.as_deref()),
+        AuditCommands::Verify { report, pubkey } => run_audit_verify(&report, pubkey.as_deref()),
+    }
+}
+
+/// UTC midnight of `s` (`YYYY-MM-DD`), as a unix timestamp — the
+/// inclusive start of an `--from` date.
+fn parse_date_start(s: &str) -> Result<u64, Box<dyn Error>> {
+    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|e| format!("invalid date {s:?} (expected YYYY-MM-DD): {e}"))?;
+    Ok(date
+        .and_hms_opt(0, 0, 0)
+        .expect("00:00:00 is always a valid time")
+        .and_utc()
+        .timestamp() as u64)
+}
+
+/// UTC 23:59:59 of `s` (`YYYY-MM-DD`), as a unix timestamp — the
+/// inclusive end of a `--to` date, so `--from 2026-01-01 --to
+/// 2026-01-01` covers that whole day rather than zero seconds of it.
+fn parse_date_end(s: &str) -> Result<u64, Box<dyn Error>> {
+    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|e| format!("invalid date {s:?} (expected YYYY-MM-DD): {e}"))?;
+    Ok(date
+        .and_hms_opt(23, 59, 59)
+        .expect("23:59:59 is always a valid time")
+        .and_utc()
+        .timestamp() as u64)
+}
+
+fn run_audit_export(from: &str, to: &str, out: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let config = get_config().unwrap_or_default();
+    let from_ts = parse_date_start(from)?;
+    let to_ts = parse_date_end(to)?;
+    if to_ts < from_ts {
+        return Err(format!("--to {to} is before --from {from}").into());
+    }
+
+    let key_path = buzz_core::signing::default_key_path();
+    let pubkey_path = buzz_core::signing::default_pubkey_path();
+    // Generates the keypair on first use, exactly like the gateway's own
+    // bearer token — see buzz-core/src/signing.rs's module doc for why
+    // this is net-new key material, not a reuse of existing infra.
+    let signing_key = buzz_core::signing::load_or_generate_key_pair(&key_path, &pubkey_path)?;
+
+    let report = buzz_core::compliance::export(&config.audit, from_ts, to_ts, &signing_key)?;
+    let json = serde_json::to_string_pretty(&report)?;
+
+    match out {
+        Some(path) => {
+            std::fs::write(path, &json)?;
+            eprintln!("wrote {path}");
+        }
+        None => println!("{json}"),
+    }
+    eprintln!(
+        "signed by {} — public key at {}",
+        report.signed_by_key_id,
+        pubkey_path.display()
+    );
+    Ok(())
+}
+
+fn run_audit_verify(report_path: &str, pubkey_path: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let report_json = std::fs::read_to_string(report_path)
+        .map_err(|e| format!("could not read {report_path}: {e}"))?;
+    let report: buzz_core::compliance::ComplianceReport = serde_json::from_str(&report_json)
+        .map_err(|e| format!("{report_path} is not a valid compliance report: {e}"))?;
+
+    let pubkey_path = pubkey_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(buzz_core::signing::default_pubkey_path);
+    let verifying_key = buzz_core::signing::load_verifying_key(&pubkey_path)?;
+
+    match buzz_core::compliance::verify(&report, &verifying_key)? {
+        true => {
+            println!(
+                "VALID — signature matches this report's contents (signed by {})",
+                report.signed_by_key_id
+            );
+            Ok(())
+        }
+        false => {
+            eprintln!("INVALID — signature does not match this report's contents (edited after signing, or wrong public key)");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn run_setup_wizard() -> Result<(), Box<dyn Error>> {
@@ -305,7 +574,7 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
     }
 
     match result {
-        Ok(resp) => {
+        Ok((resp, reservation)) => {
             // Providers that stream (local always; Groq/Anthropic/Gemini as
             // of this session) already printed their content incrementally
             // via on_token — printing resp.content here too would duplicate
@@ -320,14 +589,24 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
             let cost =
                 buzz_core::calculate_cost(resp.input_tokens, resp.output_tokens, served_provider);
             let (_, privacy_flags) = buzz_core::analyze_privacy(prompt);
-            buzz_core::audit::log_route(
-                &core_config.audit,
+            // Mirrors decide_route's own first branch condition exactly
+            // (buzz-gateway's routing.rs does the same) — only reports
+            // "forced" when that's the actual reason this landed on
+            // local, not for every local decision.
+            let sensitivity_forced_local =
+                core_config.routing.always_local_if_sensitive && scan_text(prompt);
+            buzz_core::budget::commit(
+                reservation,
+                &core_config,
+                CLI_CALLER,
+                &generate_request_id(),
                 &served_by,
                 &route.reason,
                 &privacy_flags,
                 resp.input_tokens,
                 resp.output_tokens,
                 cost,
+                sensitivity_forced_local,
             );
             println!(
                 "  Tokens: {} | Cost: ${:.6} | {:.1} tok/s | {:.2}s",
@@ -711,7 +990,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
         }
 
         match result {
-            Ok(resp) => {
+            Ok((resp, reservation)) => {
                 // Providers that stream (local always; Groq/Anthropic/Gemini
                 // as of this session) already printed their content
                 // incrementally via on_token — printing resp.content here
@@ -734,14 +1013,20 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 total_spend += cost;
                 total_elapsed_ms += resp.elapsed_ms;
                 let (_, privacy_flags) = buzz_core::analyze_privacy(&input);
-                buzz_core::audit::log_route(
-                    &config.audit,
+                let sensitivity_forced_local =
+                    config.routing.always_local_if_sensitive && scan_text(&input);
+                buzz_core::budget::commit(
+                    reservation,
+                    &config,
+                    CLI_CALLER,
+                    &generate_request_id(),
                     &served_by,
                     &route_reason,
                     &privacy_flags,
                     resp.input_tokens,
                     resp.output_tokens,
                     cost,
+                    sensitivity_forced_local,
                 );
                 let speed = resp.tokens_per_second();
                 let secs = resp.elapsed_ms / 1000.0;
@@ -1010,25 +1295,39 @@ mod tests {
     }
 
     #[test]
-    fn check_budget_allows_local_regardless_of_config() {
+    fn reserve_budget_allows_local_regardless_of_config() {
         let mut config = Config::default();
         config.cost.max_per_request_usd = 0.0;
         config.cost.daily_budget_usd = 0.0;
-        assert!(check_budget(&config, RouteProvider::Local, "anything at all").is_ok());
+        let reservation = reserve_budget(&config, RouteProvider::Local, "anything at all")
+            .expect("local is always exempt");
+        assert!(reservation.is_none());
     }
 
     #[test]
-    fn check_budget_blocks_when_per_request_limit_is_effectively_zero() {
+    fn reserve_budget_blocks_when_per_request_limit_is_effectively_zero() {
         let mut config = Config::default();
         config.cost.max_per_request_usd = 0.0;
-        let result = check_budget(&config, RouteProvider::Groq, "a normal length prompt");
+        let result = reserve_budget(&config, RouteProvider::Groq, "a normal length prompt");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().len() > 0);
     }
 
     #[test]
-    fn check_budget_allows_a_normal_prompt_under_default_limits() {
-        let config = Config::default();
-        assert!(check_budget(&config, RouteProvider::Groq, "hi").is_ok());
+    fn reserve_budget_allows_a_normal_prompt_under_default_limits() {
+        let mut config = Config::default();
+        // A dedicated temp path so this doesn't reserve against (and leak
+        // an unreleased hold on) the real ~/.buzz/audit.jsonl.
+        config.audit.log_path = std::env::temp_dir()
+            .join(format!(
+                "buzz-cli-reserve-budget-test-{:?}.jsonl",
+                std::thread::current().id()
+            ))
+            .to_string_lossy()
+            .to_string();
+        let reservation = reserve_budget(&config, RouteProvider::Groq, "hi")
+            .expect("a cheap prompt under default limits should reserve fine");
+        assert!(reservation.is_some());
+        buzz_core::budget::release(reservation);
     }
 }
