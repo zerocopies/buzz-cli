@@ -45,7 +45,10 @@ fn resolve(path: &str) -> PathBuf {
 /// Mirrors `buzz-gateway::auth::issue_and_persist` exactly: same
 /// directory convention, same "create if missing" shape, same 0600 perms
 /// on the secret half.
-pub fn load_or_generate_key_pair(key_path: &Path, pubkey_path: &Path) -> std::io::Result<SigningKey> {
+pub fn load_or_generate_key_pair(
+    key_path: &Path,
+    pubkey_path: &Path,
+) -> std::io::Result<SigningKey> {
     if let Ok(hex_seed) = std::fs::read_to_string(key_path) {
         let seed = decode_hex_32(hex_seed.trim()).ok_or_else(|| {
             std::io::Error::new(
@@ -60,15 +63,17 @@ pub fn load_or_generate_key_pair(key_path: &Path, pubkey_path: &Path) -> std::io
     }
 
     let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    getrandom::getrandom(&mut seed).map_err(|e| std::io::Error::other(e.to_string()))?;
     let signing_key = SigningKey::from_bytes(&seed);
 
     if let Some(parent) = key_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(key_path, encode_hex(&seed))?;
-    std::fs::write(pubkey_path, encode_hex(&signing_key.verifying_key().to_bytes()))?;
+    std::fs::write(
+        pubkey_path,
+        encode_hex(&signing_key.verifying_key().to_bytes()),
+    )?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -84,13 +89,19 @@ pub fn load_verifying_key(pubkey_path: &Path) -> std::io::Result<VerifyingKey> {
     let hex = std::fs::read_to_string(pubkey_path).map_err(|e| {
         std::io::Error::new(
             e.kind(),
-            format!("could not read public key at {}: {e}", pubkey_path.display()),
+            format!(
+                "could not read public key at {}: {e}",
+                pubkey_path.display()
+            ),
         )
     })?;
     let bytes = decode_hex_32(hex.trim()).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("{} does not contain a valid 32-byte hex-encoded Ed25519 public key", pubkey_path.display()),
+            format!(
+                "{} does not contain a valid 32-byte hex-encoded Ed25519 public key",
+                pubkey_path.display()
+            ),
         )
     })?;
     VerifyingKey::from_bytes(&bytes)
@@ -148,8 +159,14 @@ mod tests {
 
     fn temp_paths(name: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir();
-        let key = dir.join(format!("buzz-signing-{name}-{:?}.key", std::thread::current().id()));
-        let pubkey = dir.join(format!("buzz-signing-{name}-{:?}.pub", std::thread::current().id()));
+        let key = dir.join(format!(
+            "buzz-signing-{name}-{:?}.key",
+            std::thread::current().id()
+        ));
+        let pubkey = dir.join(format!(
+            "buzz-signing-{name}-{:?}.pub",
+            std::thread::current().id()
+        ));
         let _ = std::fs::remove_file(&key);
         let _ = std::fs::remove_file(&pubkey);
         (key, pubkey)
@@ -204,8 +221,14 @@ mod tests {
         let key_a = load_or_generate_key_pair(&key_path_a, &pubkey_path_a).unwrap();
         let key_b = load_or_generate_key_pair(&key_path_b, &pubkey_path_b).unwrap();
 
-        assert_eq!(key_id(&key_a.verifying_key()), key_id(&key_a.verifying_key()));
-        assert_ne!(key_id(&key_a.verifying_key()), key_id(&key_b.verifying_key()));
+        assert_eq!(
+            key_id(&key_a.verifying_key()),
+            key_id(&key_a.verifying_key())
+        );
+        assert_ne!(
+            key_id(&key_a.verifying_key()),
+            key_id(&key_b.verifying_key())
+        );
 
         let _ = std::fs::remove_file(&key_path_a);
         let _ = std::fs::remove_file(&pubkey_path_a);

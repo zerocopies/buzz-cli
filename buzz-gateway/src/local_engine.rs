@@ -17,8 +17,8 @@
 //! synchronous function (there is no real `.await` anywhere in the local
 //! generation path), so nothing here needs an inner async runtime.
 
-use buzz_core::ProviderResponse;
 use buzz_cli::providers::LocalProvider;
+use buzz_core::ProviderResponse;
 use std::sync::{Arc, Mutex};
 
 pub struct LocalEngine(Mutex<LocalProvider>);

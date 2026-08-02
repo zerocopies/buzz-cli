@@ -162,11 +162,29 @@ pub fn log_route(
 /// or paid cloud) requests. `sensitivity_forced_local` is meaningless for
 /// a request that never got routed at all, so this always logs `false`
 /// rather than exposing a parameter nothing can honestly fill in.
-pub fn log_rejection(config: &AuditConfig, caller: &str, request_id: &str, provider: &str, reason: &str) {
+pub fn log_rejection(
+    config: &AuditConfig,
+    caller: &str,
+    request_id: &str,
+    provider: &str,
+    reason: &str,
+) {
     if !config.enabled {
         return;
     }
-    if let Err(e) = append_entry(config, caller, request_id, provider, reason, &[], 0, 0, 0.0, true, false) {
+    if let Err(e) = append_entry(
+        config,
+        caller,
+        request_id,
+        provider,
+        reason,
+        &[],
+        0,
+        0,
+        0.0,
+        true,
+        false,
+    ) {
         eprintln!(
             "[buzz] warning: could not write audit log ({}): {}",
             config.log_path, e
@@ -380,7 +398,11 @@ fn release_amount(log_path: &Path, amount: f64) {
 /// On rejection, returns the total already accounted for (committed +
 /// outstanding reservations), so the caller can build an accurate error
 /// message.
-pub fn reserve(config: &AuditConfig, estimated_cost: f64, daily_budget_usd: f64) -> Result<Reservation, f64> {
+pub fn reserve(
+    config: &AuditConfig,
+    estimated_cost: f64,
+    daily_budget_usd: f64,
+) -> Result<Reservation, f64> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let path = expand_tilde(&config.log_path, &home);
     let lock = lock_for(&path);
@@ -659,9 +681,42 @@ mod tests {
     #[test]
     fn fresh_log_chains_and_verifies_cleanly() {
         let config = temp_config("chain-fresh");
-        log_route(&config, "test-caller", "test-req", "local", "one", &[], 1, 1, 0.0, false);
-        log_route(&config, "test-caller", "test-req", "groq", "two", &[], 1, 1, 0.1, false);
-        log_route(&config, "test-caller", "test-req", "local", "three", &[], 1, 1, 0.0, false);
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "one",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "groq",
+            "two",
+            &[],
+            1,
+            1,
+            0.1,
+            false,
+        );
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "three",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
 
         assert_eq!(
             verify_chain(&config),
@@ -680,9 +735,42 @@ mod tests {
     #[test]
     fn detects_tampering_with_a_middle_entry() {
         let config = temp_config("chain-tamper");
-        log_route(&config, "test-caller", "test-req", "local", "one", &[], 1, 1, 0.0, false);
-        log_route(&config, "test-caller", "test-req", "local", "two", &[], 1, 1, 0.0, false);
-        log_route(&config, "test-caller", "test-req", "local", "three", &[], 1, 1, 0.0, false);
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "one",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "two",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "three",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
 
         let home = std::env::var("HOME").unwrap_or_default();
         let path = expand_tilde(&config.log_path, &home);
@@ -714,7 +802,18 @@ mod tests {
         std::fs::write(&path, format!("{legacy}\n")).unwrap();
 
         // A new, chained entry gets appended on top of the legacy one.
-        log_route(&config, "test-caller", "test-req", "local", "post-chain entry", &[], 1, 1, 0.0, false);
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "post-chain entry",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
 
         assert_eq!(
             verify_chain(&config),
@@ -739,7 +838,18 @@ mod tests {
             log_path: path.to_string_lossy().to_string(),
         };
 
-        log_route(&config, "test-caller", "test-req", "local", "simple", &[], 10, 10, 0.0, false);
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "simple",
+            &[],
+            10,
+            10,
+            0.0,
+            false,
+        );
         log_route(
             &config,
             "test-caller",
@@ -752,7 +862,18 @@ mod tests {
             0.0,
             false,
         );
-        log_route(&config, "test-caller", "test-req", "groq", "complex", &[], 100, 100, 0.25, false);
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "groq",
+            "complex",
+            &[],
+            100,
+            100,
+            0.25,
+            false,
+        );
 
         let summary = summarize(&config);
         assert_eq!(summary.total_requests, 3);
@@ -778,9 +899,42 @@ mod tests {
             log_path: path.to_string_lossy().to_string(),
         };
 
-        log_route(&config, "test-caller", "test-req", "local", "first", &[], 1, 1, 0.0, false);
-        log_route(&config, "test-caller", "test-req", "local", "second", &[], 1, 1, 0.0, false);
-        log_route(&config, "test-caller", "test-req", "local", "third", &[], 1, 1, 0.0, false);
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "first",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "second",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "third",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
 
         let last_two = recent(&config, 2);
         assert_eq!(last_two.len(), 2);
@@ -804,7 +958,18 @@ mod tests {
             enabled: false,
             log_path: "/nonexistent/should/not/be/created.jsonl".to_string(),
         };
-        log_route(&config, "test-caller", "test-req", "local", "test", &[], 1, 1, 0.0, false);
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "local",
+            "test",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
         assert!(!std::path::Path::new(&config.log_path).exists());
     }
 
@@ -852,7 +1017,18 @@ mod tests {
         };
 
         // A real entry from "now" (via log_route)...
-        log_route(&config, "test-caller", "test-req", "groq", "cloud call", &[], 100, 100, 0.50, false);
+        log_route(
+            &config,
+            "test-caller",
+            "test-req",
+            "groq",
+            "cloud call",
+            &[],
+            100,
+            100,
+            0.50,
+            false,
+        );
         // ...plus a hand-crafted entry from 10 days ago, which must not count.
         let ten_days_ago = start_of_today_unix() - (10 * 86400);
         let old_entry = serde_json::json!({

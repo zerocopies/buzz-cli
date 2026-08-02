@@ -141,7 +141,9 @@ pub fn export(
             // and isn't attributable to a real provider call — excluded
             // from cost-by-provider so "n/a": 0.0 doesn't show up as if
             // it were a real provider.
-            *cost_by_provider.entry(entry.provider.clone()).or_insert(0.0) += entry.cost_usd;
+            *cost_by_provider
+                .entry(entry.provider.clone())
+                .or_insert(0.0) += entry.cost_usd;
             total_cost += entry.cost_usd;
         }
         if entry.sensitivity_forced_local {
@@ -152,7 +154,9 @@ pub fn export(
     // Last raw line whose entry falls in range, in file (chronological
     // append) order — hashed with the exact function the chain itself
     // uses, not a reimplementation.
-    let terminal_hash = in_range.last().map(|(raw_line, _)| audit::hash_line(raw_line));
+    let terminal_hash = in_range
+        .last()
+        .map(|(raw_line, _)| audit::hash_line(raw_line));
 
     let key_id = signing::key_id(&signing_key.verifying_key());
 
@@ -200,10 +204,17 @@ impl std::error::Error for VerifyError {}
 /// report that round-trips through `export` then straight to `verify`
 /// with no edits always returns `Ok(true)`; changing *any* signed field
 /// — including ones that look purely cosmetic — flips it to `Ok(false)`.
-pub fn verify(report: &ComplianceReport, verifying_key: &VerifyingKey) -> Result<bool, VerifyError> {
+pub fn verify(
+    report: &ComplianceReport,
+    verifying_key: &VerifyingKey,
+) -> Result<bool, VerifyError> {
     let signature =
         signing::decode_hex_64(&report.signature).ok_or(VerifyError::MalformedSignature)?;
-    Ok(signing::verify(verifying_key, &signable_bytes(report), &signature))
+    Ok(signing::verify(
+        verifying_key,
+        &signable_bytes(report),
+        &signature,
+    ))
 }
 
 #[cfg(test)]
@@ -225,8 +236,14 @@ mod tests {
 
     fn temp_key_paths(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir();
-        let key = dir.join(format!("buzz-compliance-key-{name}-{:?}", std::thread::current().id()));
-        let pubkey = dir.join(format!("buzz-compliance-pub-{name}-{:?}", std::thread::current().id()));
+        let key = dir.join(format!(
+            "buzz-compliance-key-{name}-{:?}",
+            std::thread::current().id()
+        ));
+        let pubkey = dir.join(format!(
+            "buzz-compliance-pub-{name}-{:?}",
+            std::thread::current().id()
+        ));
         let _ = std::fs::remove_file(&key);
         let _ = std::fs::remove_file(&pubkey);
         (key, pubkey)
@@ -238,9 +255,42 @@ mod tests {
         let (key_path, pubkey_path) = temp_key_paths("summarize");
         let signing_key = load_or_generate_key_pair(&key_path, &pubkey_path).unwrap();
 
-        audit::log_route(&config, "alice", "req-1", "local", "simple", &[], 10, 10, 0.0, false);
-        audit::log_route(&config, "bob", "req-2", "groq", "complex", &[], 100, 100, 0.25, false);
-        audit::log_route(&config, "alice", "req-3", "local", "sensitive", &[], 10, 10, 0.0, true);
+        audit::log_route(
+            &config,
+            "alice",
+            "req-1",
+            "local",
+            "simple",
+            &[],
+            10,
+            10,
+            0.0,
+            false,
+        );
+        audit::log_route(
+            &config,
+            "bob",
+            "req-2",
+            "groq",
+            "complex",
+            &[],
+            100,
+            100,
+            0.25,
+            false,
+        );
+        audit::log_route(
+            &config,
+            "alice",
+            "req-3",
+            "local",
+            "sensitive",
+            &[],
+            10,
+            10,
+            0.0,
+            true,
+        );
         audit::log_rejection(&config, "carol", "req-4", "n/a", "budget cap exceeded");
 
         let report = export(&config, 0, audit::now_unix() + 1, &signing_key).unwrap();
@@ -266,7 +316,18 @@ mod tests {
         let (key_path, pubkey_path) = temp_key_paths("tamper");
         let signing_key = load_or_generate_key_pair(&key_path, &pubkey_path).unwrap();
 
-        audit::log_route(&config, "alice", "req-1", "groq", "complex", &[], 100, 100, 0.50, false);
+        audit::log_route(
+            &config,
+            "alice",
+            "req-1",
+            "groq",
+            "complex",
+            &[],
+            100,
+            100,
+            0.50,
+            false,
+        );
 
         let mut report = export(&config, 0, audit::now_unix() + 1, &signing_key).unwrap();
         let verifying_key = signing_key.verifying_key();
@@ -288,8 +349,30 @@ mod tests {
         let (key_path, pubkey_path) = temp_key_paths("broken");
         let signing_key = load_or_generate_key_pair(&key_path, &pubkey_path).unwrap();
 
-        audit::log_route(&config, "alice", "req-1", "local", "one", &[], 1, 1, 0.0, false);
-        audit::log_route(&config, "alice", "req-2", "local", "two", &[], 1, 1, 0.0, false);
+        audit::log_route(
+            &config,
+            "alice",
+            "req-1",
+            "local",
+            "one",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
+        audit::log_route(
+            &config,
+            "alice",
+            "req-2",
+            "local",
+            "two",
+            &[],
+            1,
+            1,
+            0.0,
+            false,
+        );
 
         let home = std::env::var("HOME").unwrap_or_default();
         let path = audit::expand_tilde(&config.log_path, &home);

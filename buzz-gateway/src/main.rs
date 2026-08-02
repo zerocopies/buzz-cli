@@ -41,9 +41,9 @@ use local_engine::LocalEngine;
 use routing::RealRouter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use std::time::Duration;
 
 /// Shared state every handler needs.
 pub struct AppState {
@@ -135,7 +135,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("listening on http://{addr}");
     println!("✓ listening on http://{addr}");
     println!("  POST /v1/chat/completions");
-    println!("  Authorization: Bearer <token from {}>", token_path.display());
+    println!(
+        "  Authorization: Bearer <token from {}>",
+        token_path.display()
+    );
 
     axum::serve(listener, app).await?;
     Ok(())

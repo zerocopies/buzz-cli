@@ -238,7 +238,10 @@ async fn dispatch_with_fallback(
     mut on_token: impl FnMut(&str) + Send,
 ) -> (
     String,
-    Result<(ProviderResponse, Option<buzz_core::budget::Reservation>), Box<dyn Error + Send + Sync>>,
+    Result<
+        (ProviderResponse, Option<buzz_core::budget::Reservation>),
+        Box<dyn Error + Send + Sync>,
+    >,
 ) {
     let mut attempts: Vec<String> = vec![initial.to_string()];
     for raw in fallback_order {
@@ -1291,7 +1294,9 @@ mod tests {
         std::env::remove_var("PROVIDER");
         let picked = select_provider_name(&None);
         assert_eq!(picked, "groq");
-        if let Some(v) = prior { std::env::set_var("PROVIDER", v); }
+        if let Some(v) = prior {
+            std::env::set_var("PROVIDER", v);
+        }
     }
 
     #[test]
