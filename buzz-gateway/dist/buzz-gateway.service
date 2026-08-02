@@ -1,0 +1,72 @@
+# System-wide systemd unit for buzz-gateway (deck slide 02: "an IT team
+# deploys it machine-wide"). Installed automatically by install.sh, or by
+# hand: copy to /etc/systemd/system/buzz-gateway.service, then
+# `systemctl daemon-reload && systemctl enable --now buzz-gateway`.
+#
+# --- The $HOME footgun (verified against systemd.exec(5), systemd 255) ---
+# A *system* unit does NOT run in an interactive shell's environment.
+# Concretely: $HOME, $LOGNAME, and $SHELL are only populated by systemd
+# at all if `User=` is set on the unit — omit it (or forget it) and the
+# service runs as root with none of those set. buzz-gateway resolves
+# every path it cares about (~/.buzz/config.toml, ~/.buzz/gateway.token,
+# the audit log) via `std::env::var("HOME").unwrap_or_else(|_| ".")`, so
+# a missing $HOME doesn't error — it silently falls back to ".", i.e.
+# the process's current working directory, which for a system unit
+# defaults to "/" unless `WorkingDirectory=` is set. The failure mode
+# this produces is exactly the "starts fine, does something confusingly
+# wrong" shape this whole packaging pass is trying to close: the service
+# comes up, but reads/writes /.buzz/* instead of the intended account's
+# config, either silently defaulting (config) or failing outright
+# (token write, if / isn't writable by the service user).
+#
+# The fix here is belt-and-suspenders rather than relying on systemd's
+# User=-implies-$HOME behavior alone: `User=` is set (so $HOME *is*
+# correctly populated from this account's /etc/passwd entry), and
+# `Environment=HOME=...` / `WorkingDirectory=` are ALSO set explicitly to
+# the same path, so the correct location is visible directly in this
+# file without needing to know that subtler systemd behavior. (Do not
+# use the "%h" specifier here to shortcut this — for a *system* unit "%h"
+# expands to the service *manager's* home, i.e. /root, not this unit's
+# User=account. Another documented footgun, and the wrong one to hit.)
+
+[Unit]
+Description=buzz-gateway — loopback-only OpenAI-compatible routing gateway
+After=network.target
+
+[Service]
+Type=simple
+User=buzz-gateway
+Group=buzz-gateway
+Environment=HOME=/var/lib/buzz-gateway
+WorkingDirectory=/var/lib/buzz-gateway
+
+# install.sh places both binaries here; adjust if installed elsewhere.
+ExecStart=/usr/local/bin/buzz-gateway
+
+# --- Restart policy (deck slide 10 decision — see buzz-gateway/src/main.rs) ---
+# buzz-gateway does not restart itself on crash. systemd is the single
+# layer responsible for "did this die, should it come back."
+Restart=on-failure
+RestartSec=2s
+
+# A crash loop (e.g. a config that fails validation on every boot) should
+# surface as a stopped, inspectable unit — not restart forever and bury
+# the one error that actually matters under thousands of log lines.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logs are JSON (see main.rs) — land in the journal exactly as emitted;
+# `journalctl -u buzz-gateway -o cat | jq .` to filter/query.
+StandardOutput=journal
+StandardError=journal
+
+# Minimal hardening — not a full sandboxing pass, just the low-cost
+# defaults appropriate for a network-facing service that only needs to
+# read/write its own home directory.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/buzz-gateway
+
+[Install]
+WantedBy=multi-user.target
