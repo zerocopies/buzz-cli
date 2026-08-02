@@ -18,8 +18,15 @@ pub struct ChatCompletionRequest {
     pub messages: Vec<ChatMessage>,
     #[serde(default)]
     pub stream: bool,
+    // TODO: not yet threaded through dispatch() in handlers.rs — parsed
+    // from the request but not passed to any provider call. Wiring this
+    // requires widening dispatch()'s signature and every provider's
+    // generate() call, deferred as a separate task. #[allow(dead_code)]
+    // here is a known, temporary gap, not a silent drop.
+    #[allow(dead_code)]
     #[serde(default)]
     pub temperature: Option<f32>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub max_tokens: Option<u32>,
 
