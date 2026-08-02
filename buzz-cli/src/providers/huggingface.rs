@@ -27,8 +27,8 @@ impl InferenceProvider for HuggingFaceProvider {
     async fn generate(
         &mut self,
         prompt: &str,
-        _on_token: &mut dyn FnMut(&str),
-    ) -> Result<ProviderResponse, Box<dyn Error>> {
+        _on_token: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<ProviderResponse, Box<dyn Error + Send + Sync>> {
         let url = format!("{}/{}", HF_ENDPOINT, self.model);
 
         let start = std::time::Instant::now();

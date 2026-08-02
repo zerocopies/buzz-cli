@@ -32,8 +32,8 @@ impl InferenceProvider for AnthropicProvider {
     async fn generate(
         &mut self,
         prompt: &str,
-        on_token: &mut dyn FnMut(&str),
-    ) -> Result<ProviderResponse, Box<dyn Error>> {
+        on_token: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<ProviderResponse, Box<dyn Error + Send + Sync>> {
         let start = std::time::Instant::now();
         let response = self
             .client
