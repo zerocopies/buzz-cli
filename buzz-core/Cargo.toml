@@ -10,3 +10,5 @@ toml.workspace = true
 lazy_static.workspace = true
 regex.workspace = true
 sha2 = "0.10"
+ed25519-dalek = "2"
+getrandom = "0.2"
