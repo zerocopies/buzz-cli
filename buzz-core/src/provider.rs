@@ -30,20 +30,29 @@ impl ProviderResponse {
 /// through one code path instead of branching on "is this local or cloud."
 ///
 /// `on_token` is called for each incrementally decoded piece, for providers
-/// that support streaming (currently only the local engine); providers that
-/// only return a full response at once simply never call it.
+/// that support streaming (currently the local engine and Groq/Anthropic/
+/// Gemini); providers that only return a full response at once simply
+/// never call it.
 ///
-/// No `Send` bound: the local engine wraps ggml raw pointers and is not
-/// Send/Sync, and every caller runs on a single thread (block_on or a
-/// direct .await, never tokio::spawn), so requiring Send would be pure
-/// friction with no benefit here.
+/// `Send` bound on both `on_token` and the error type: buzz-gateway calls
+/// this from Axum handlers on a multi-threaded Tokio runtime, where the
+/// whole handler future (and anything `tokio::spawn`ed for streaming) must
+/// be `Send`. Costs buzz-cli nothing — its own closures (capturing a bool
+/// flag, a stdout handle, etc.) and error sources (`String`, `reqwest`,
+/// `serde_json`) already satisfy `Send`/`Send + Sync`.
+///
+/// The local engine itself is a separate story: `qfz3::Engine` wraps ggml
+/// raw pointers and is not `Send`/`Sync` at all, trait bound or not.
+/// buzz-gateway never calls `LocalProvider::generate` directly — it runs
+/// the engine on one dedicated thread behind `local_engine::LocalEngine`,
+/// per qfz3's own documented safety invariant (see that module).
 #[allow(async_fn_in_trait)]
 pub trait InferenceProvider {
     async fn generate(
         &mut self,
         prompt: &str,
-        on_token: &mut dyn FnMut(&str),
-    ) -> Result<ProviderResponse, Box<dyn std::error::Error>>;
+        on_token: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<ProviderResponse, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[cfg(test)]
