@@ -30,9 +30,29 @@ unsafe impl Send for LocalEngine {}
 unsafe impl Sync for LocalEngine {}
 
 impl LocalEngine {
+    /// Expands a leading `~/` against $HOME before handing the path to
+    /// LocalProvider — mirrors audit.rs's expand_tilde convention.
+    /// Without this, a raw "~/..." string only resolves correctly under
+    /// an interactive shell; under systemd (no shell, no tilde
+    /// expansion) it's passed through literally and the model file load
+    /// fails with a confusing "No such file or directory" even when the
+    /// file exists at the real, expanded path.
+    fn expand_tilde(path: &str) -> String {
+        match path.strip_prefix("~/") {
+            Some(rest) => {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                std::path::PathBuf::from(home)
+                    .join(rest)
+                    .to_string_lossy()
+                    .to_string()
+            }
+            None => path.to_string(),
+        }
+    }
+
     pub fn new(model_path: String, context_size: usize) -> Arc<Self> {
         Arc::new(Self(Mutex::new(LocalProvider::new(
-            model_path,
+            Self::expand_tilde(&model_path),
             context_size,
         ))))
     }
