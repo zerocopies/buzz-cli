@@ -1,5 +1,5 @@
 [workspace]
-members = ["buzz-core", "buzz-cli"]
+members = ["buzz-core", "buzz-cli", "buzz-gateway"]
 resolver = "2"
 
 [workspace.package]
