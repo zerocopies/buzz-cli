@@ -21,11 +21,11 @@ use crate::routing::{RouteDecision, RouteError, RouteTarget};
 use crate::{caller, AppState};
 
 use axum::extract::State;
-use buzz_core::InferenceProvider;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use buzz_core::InferenceProvider;
 use futures::stream::Stream;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -39,7 +39,7 @@ pub async fn healthz() -> &'static str {
 /// Auth check, shared by streaming and non-streaming paths. Constant-time
 /// compare (see auth::verify) — no early-exit string comparison on a
 /// secret, ever.
-fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Box<Response>> {
     let provided = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -47,11 +47,11 @@ fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
 
     match provided {
         Some(token) if auth_ok(state, token) => Ok(()),
-        _ => Err(error_response(
+        _ => Err(Box::new(error_response(
             StatusCode::UNAUTHORIZED,
             "invalid or missing bearer token",
             "invalid_request_error",
-        )),
+        ))),
     }
 }
 
@@ -91,7 +91,7 @@ pub async fn chat_completions(
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
     if let Err(resp) = check_auth(&state, &headers) {
-        return resp;
+        return *resp;
     }
 
     let request_id = format!("chatcmpl-{}", Uuid::new_v4());
@@ -156,7 +156,12 @@ async fn dispatch(
     mut on_token: impl FnMut(&str) + Send + 'static,
 ) -> Result<buzz_core::ProviderResponse, String> {
     match target {
-        RouteTarget::Local => state.local_engine.generate(prompt.to_string(), on_token).await,
+        RouteTarget::Local => {
+            state
+                .local_engine
+                .generate(prompt.to_string(), on_token)
+                .await
+        }
         RouteTarget::Groq => {
             let key = state.config.providers.groq.trim();
             if key.is_empty() {
