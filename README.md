@@ -138,6 +138,56 @@ This is a **default policy**, not a network-level guarantee — Buzz doesn't blo
 
 ---
 
+## buzz-gateway — HTTP server
+
+If you want to point an existing OpenAI-compatible client (a script, an IDE plugin, anything that speaks the `/v1/chat/completions` shape) at Buzz instead of using the CLI directly, `buzz-gateway` is a loopback-only HTTP server that exposes the same routing, budget, and audit logic as the CLI.
+
+It is **not** a separate credential store or a second install — it reads the same `~/.buzz/config.toml` (provider keys, local model path, daily budget) and writes to the same audit log the CLI does. Anything you've already configured via `buzz-cli --setup` works with the gateway with no extra setup.
+
+### Starting it
+
+```bash
+buzz-cli serve --port 8787   # 8787 is the default; --port is optional
+```
+
+This execs a sibling `buzz-gateway` binary (built alongside `buzz-cli` by the same `cargo build --release`). On startup it prints the URL and where it wrote a fresh bearer token:
+
+```
+✓ listening on http://127.0.0.1:8787
+  POST /v1/chat/completions
+  Authorization: Bearer <token from /home/you/.buzz/gateway.token>
+```
+
+**Loopback-only, hardcoded** — the bind address is `127.0.0.1`, not configurable via flag or env var. It is not reachable from another machine, full stop. Only the port is configurable.
+
+### Pointing a client at it
+
+Read the token from `~/.buzz/gateway.token` (a fresh one is issued on every `serve` restart) and use it as a bearer token against the base URL:
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer $(cat ~/.buzz/gateway.token)" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "buzz", "messages": [{"role": "user", "content": "hi"}], "stream": false}'
+```
+
+Any OpenAI-compatible client library works the same way: base URL `http://127.0.0.1:8787/v1`, API key = the contents of `~/.buzz/gateway.token`. Both streaming (`"stream": true`, server-sent events) and non-streaming requests are supported.
+
+### What it actually does — and doesn't
+
+- **Routing**: every request goes through the same `decide_route` sensitivity/complexity logic and provider dispatch the CLI uses — sensitive content still forces local, regardless of the `model` field in the request.
+- **Budget**: cloud calls still count against the same daily budget cap in `~/.buzz/config.toml`, reserved before the call and committed or released after, same as the CLI.
+- **Audit**: every request is written to the same hash-chained, tamper-evident audit log (`buzz-cli audit export` / `audit verify` cover gateway traffic too, not just CLI traffic).
+- **Auth**: a random 256-bit token, written to `~/.buzz/gateway.token` with owner-only (`0600`) file permissions, checked in constant time. That's the whole auth model — no user accounts, no scopes, no TLS termination built in.
+- **What this is not**: loopback-only bind and token auth are a *default policy*, same honesty standard as the routing section above — this describes what the gateway actually does (bind to 127.0.0.1, require a bearer token, log what it served), not a network-level security guarantee. If you reverse-proxy it, put it behind something that terminates TLS and adds real access control first.
+- If the gateway process dies, it does not restart itself — run it under systemd (`buzz-gateway.service`, installed by the release tarball's `install.sh`) with `Restart=on-failure` for anything beyond ad hoc local use.
+
+### Getting it
+
+A tagged `v0.1.0` release exists; pushing a `v*` tag triggers a GitHub Actions workflow that builds `buzz-cli` and `buzz-gateway`, stages both binaries plus the systemd unit and installer into a `buzz-gateway-<version>-linux-<arch>.tar.gz`, and attaches it to the release. Linux-only for now — the packaged systemd unit is Linux-specific.
+
+---
+
 ## Compliance & verification (planned)
 
 Everything above is Buzz telling you what it did, in the moment. There's a companion project, `sovereignty-attestor`, that can go further: it produces a signed, tamper-evident report proving — after the fact, independently checkable — that a given session's sensitive messages actually stayed local. It exists as its own crate today but isn't wired into Buzz yet, so this is a documented direction, not a current feature. If provable compliance reporting matters for your use case, treat this as roadmap, not something to rely on yet.
@@ -167,11 +217,12 @@ If you ask the exact same question twice in one session, the second time is inst
 ```
 buzz-cli/
 ├── buzz-cli/       — the CLI application (this is what you install and run)
-├── buzz-core/      — routing logic, privacy detection, shared config types
+├── buzz-core/      — routing logic, privacy detection, shared config types, audit log
+├── buzz-gateway/   — the `buzz-cli serve` HTTP server (see buzz-gateway section above)
 └── Cargo.toml      — workspace root
 ```
 
-Buzz's local inference runs on [qfz3](https://github.com/zerocopies/qfz3), a separate zero-copy inference engine (model weights are memory-mapped, not copied into memory) that Buzz depends on for on-device generation.
+Buzz's local inference runs on [qfz3-engine](https://github.com/zerocopies/qfz3), a separate zero-copy inference engine (model weights are memory-mapped, not copied into memory) that Buzz depends on for on-device generation.
 
 ---
 
