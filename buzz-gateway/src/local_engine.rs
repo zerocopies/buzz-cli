@@ -1,7 +1,7 @@
 //! Thread-safe handle around the local qfz3 engine for use from Axum's
 //! multi-threaded runtime.
 //!
-//! `qfz3::Engine` (wrapped inside `buzz_cli::providers::LocalProvider`)
+//! `qfz3_engine::Engine` (wrapped inside `buzz_cli::providers::LocalProvider`)
 //! holds raw ggml pointers and is deliberately not `Send`/`Sync` — see the
 //! safety note on `qfz3_engine::engine::Engine`. That note also states the
 //! sanctioned way around it: "ggml contexts are not thread-affine, so
@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct LocalEngine(Mutex<LocalProvider>);
 
-// SAFETY: see module doc — qfz3::Engine's raw pointers are not
+// SAFETY: see module doc — qfz3_engine::Engine's raw pointers are not
 // thread-affine, and `generate` below is the only way to reach the inner
 // `LocalProvider`, always through the mutex, never released mid-use.
 unsafe impl Send for LocalEngine {}

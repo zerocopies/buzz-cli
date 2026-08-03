@@ -41,11 +41,11 @@ impl ProviderResponse {
 /// flag, a stdout handle, etc.) and error sources (`String`, `reqwest`,
 /// `serde_json`) already satisfy `Send`/`Send + Sync`.
 ///
-/// The local engine itself is a separate story: `qfz3::Engine` wraps ggml
-/// raw pointers and is not `Send`/`Sync` at all, trait bound or not.
+/// The local engine itself is a separate story: `qfz3_engine::Engine` wraps
+/// ggml raw pointers and is not `Send`/`Sync` at all, trait bound or not.
 /// buzz-gateway never calls `LocalProvider::generate` directly — it runs
 /// the engine on one dedicated thread behind `local_engine::LocalEngine`,
-/// per qfz3's own documented safety invariant (see that module).
+/// per qfz3-engine's own documented safety invariant (see that module).
 #[allow(async_fn_in_trait)]
 pub trait InferenceProvider {
     async fn generate(

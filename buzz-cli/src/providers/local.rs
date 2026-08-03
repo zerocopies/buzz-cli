@@ -2,12 +2,12 @@ use std::error::Error;
 
 use buzz_core::{InferenceProvider, ProviderResponse};
 
-/// Wraps the local qfz3 engine, loading it once on first use and reusing it
+/// Wraps the local qfz3-engine, loading it once on first use and reusing it
 /// (and its KV cache / turn counter) for the rest of the session — this is
 /// what makes multi-turn memory work and avoids reloading the model per
 /// message. Just another `InferenceProvider`, not a specially-cased branch.
 pub struct LocalProvider {
-    engine: Option<qfz3::Engine>,
+    engine: Option<qfz3_engine::Engine>,
     model_path: String,
     context_size: usize,
 }
@@ -45,16 +45,16 @@ impl LocalProvider {
     /// Synchronous form of `generate` — identical behavior, callable from a
     /// plain blocking context (e.g. inside `tokio::task::spawn_blocking`)
     /// with no async machinery involved. There's no real `.await` in
-    /// either path — `qfz3::Engine::generate_streaming` is itself fully
-    /// synchronous; the trait impl below just wraps this in `async fn` for
-    /// uniformity with the cloud providers.
+    /// either path — `qfz3_engine::Engine::generate_streaming` is itself
+    /// fully synchronous; the trait impl below just wraps this in `async fn`
+    /// for uniformity with the cloud providers.
     pub fn generate_blocking(
         &mut self,
         prompt: &str,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<ProviderResponse, Box<dyn Error + Send + Sync>> {
         if self.engine.is_none() {
-            self.engine = Some(qfz3::Engine::load(
+            self.engine = Some(qfz3_engine::Engine::load(
                 &self.model_path,
                 self.context_size,
                 None,

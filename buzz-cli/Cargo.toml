@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 buzz-core = { path = "../buzz-core" }
-qfz3 = { git = "https://github.com/zerocopies/qfz3.git", rev = "4f426e663550cf70663d468c4822a82b5e9df941" }
+qfz3-engine = { git = "https://github.com/zerocopies/qfz3.git", rev = "0b8f151792f4fb68cbb23266cd766b0aa792730e" }
 tokio = { version = "1", features = ["full", "macros", "rt-multi-thread"] }
 crossterm = "0.27"
 reqwest = { version = "0.12", features = ["json", "stream"] }
