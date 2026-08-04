@@ -18,7 +18,7 @@ Buzz also actively watches for things you probably don't want leaving your devic
 
 - Rust 1.75+ (to build)
 - A local GGUF model file. Not included in the repository — GGUF files typically run 500MB–5GB, too large for git. See "Getting a model" below.
-- Optionally, your own API key for a cloud provider, if you want cloud fallback for complex questions. Buzz currently supports bring-your-own-key for Groq, Anthropic, Gemini, and Hugging Face — use whichever you already have an account with.
+- Optionally, your own API key for a cloud provider, if you want cloud fallback for complex questions. Buzz currently supports bring-your-own-key for Groq, Gemini, and Hugging Face — use whichever you already have an account with.
 
 ---
 
@@ -122,7 +122,7 @@ Example — adding your own key for a provider without re-running setup:
 groq key updated
 ```
 
-Buzz currently recognizes `groq`, `anthropic`, `gemini`, and `hf` as provider names — use `/settings` (with no arguments) to see the exact list and your current status for each.
+Buzz currently recognizes `groq`, `gemini`, and `hf` as provider names — use `/settings` (with no arguments) to see the exact list and your current status for each.
 
 ---
 

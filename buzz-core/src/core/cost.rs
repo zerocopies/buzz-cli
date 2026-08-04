@@ -17,10 +17,6 @@ pub fn get_pricing(provider: RouteProvider) -> ProviderPricing {
             input_per_token: 0.00000059,
             output_per_token: 0.00000079,
         },
-        RouteProvider::Anthropic => ProviderPricing {
-            input_per_token: 0.000008,
-            output_per_token: 0.000024,
-        },
         RouteProvider::Gemini => ProviderPricing {
             input_per_token: 0.00000025,
             output_per_token: 0.00000050,
@@ -57,11 +53,7 @@ mod tests {
 
     #[test]
     fn cloud_providers_charge_by_token() {
-        for provider in [
-            RouteProvider::Groq,
-            RouteProvider::Anthropic,
-            RouteProvider::Gemini,
-        ] {
+        for provider in [RouteProvider::Groq, RouteProvider::Gemini] {
             let cost = calculate_cost(1000, 1000, provider);
             assert!(cost > 0.0, "{provider:?} should have nonzero cost");
         }

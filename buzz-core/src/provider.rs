@@ -30,9 +30,9 @@ impl ProviderResponse {
 /// through one code path instead of branching on "is this local or cloud."
 ///
 /// `on_token` is called for each incrementally decoded piece, for providers
-/// that support streaming (currently the local engine and Groq/Anthropic/
-/// Gemini); providers that only return a full response at once simply
-/// never call it.
+/// that support streaming (currently the local engine and Groq/Gemini);
+/// providers that only return a full response at once simply never call
+/// it.
 ///
 /// `Send` bound on both `on_token` and the error type: buzz-gateway calls
 /// this from Axum handlers on a multi-threaded Tokio runtime, where the

@@ -15,7 +15,7 @@ team deploys machine-wide (deck slide 02).
 | Caller attribution (v1, `X-Buzz-Client` header) | `caller.rs` |
 | Fail-closed error handling (401, 429, 503 — no silent cloud fallback) | `handlers.rs` |
 | `decide_route` routing decision + concurrent-safe budget reservation | `routing.rs` (`RealRouter`) |
-| Provider dispatch — local engine, Groq, Anthropic, Gemini, HuggingFace | `handlers.rs` (`dispatch`) |
+| Provider dispatch — local engine, Groq, Gemini, HuggingFace | `handlers.rs` (`dispatch`) |
 | Budget enforcement (reserve/commit/release, leak-proof via `Drop`) | `buzz-core/src/budget.rs` |
 | Real token counts in `Usage` (not hardcoded) | `handlers.rs` |
 | Audit hash-chain — every request, real or rejected, logged to `~/.buzz/audit.jsonl` | `buzz-core/src/audit.rs` |

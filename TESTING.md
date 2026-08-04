@@ -99,7 +99,7 @@ Worth being upfront about this rather than implying full coverage:
 
 - **The interactive chat loop itself** (`run_tui_mode`) — reading stdin, dispatching commands, driving the conversation. This is I/O-bound and stateful in a way that would need a proper CLI-testing harness (spawning the binary, feeding it stdin, asserting on stdout) to test meaningfully. Currently verified by manual testing only.
 - **Actual model inference** (the qfz3 engine) — loading a GGUF file and generating tokens is verified by running real models against real prompts during development, not by automated unit tests. This would need a small test model bundled or downloaded in CI, which isn't set up yet.
-- **Live API calls to cloud providers** — the SSE *parsing* is tested, but an actual network call to Groq/Anthropic/etc. is not, since that would require live API keys and network access in CI.
+- **Live API calls to cloud providers** — the SSE *parsing* is tested, but an actual network call to Groq/Gemini/etc. is not, since that would require live API keys and network access in CI.
 
 ## Running a specific subset
 

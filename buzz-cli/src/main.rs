@@ -5,9 +5,7 @@ use clap::Parser;
 use std::error::Error;
 use std::io::Write;
 
-use buzz_cli::providers::{
-    AnthropicProvider, GeminiProvider, GroqProvider, HuggingFaceProvider, LocalProvider,
-};
+use buzz_cli::providers::{GeminiProvider, GroqProvider, HuggingFaceProvider, LocalProvider};
 use buzz_core::{decide_route, scan_text, InferenceProvider, ProviderResponse, RouteProvider};
 
 /// `caller` value for every audit entry buzz-cli itself writes — as
@@ -173,20 +171,6 @@ async fn dispatch_provider(
                 }
             }
         }
-        "anthropic" => {
-            let key = require_key(&config.providers.anthropic, "anthropic_api_key")?;
-            let reservation = reserve_budget(config, RouteProvider::Anthropic, prompt)?;
-            match AnthropicProvider::new(key.to_string(), None)
-                .generate(prompt, &mut on_token)
-                .await
-            {
-                Ok(resp) => Ok((resp, reservation)),
-                Err(e) => {
-                    buzz_core::budget::release(reservation);
-                    Err(e)
-                }
-            }
-        }
         "gemini" => {
             let key = require_key(&config.providers.gemini, "gemini_api_key")?;
             let reservation = reserve_budget(config, RouteProvider::Gemini, prompt)?;
@@ -329,7 +313,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// sibling of `buzz-cli` in the same target directory, rather than
 /// calling gateway startup code directly — buzz-gateway's own Cargo.toml
 /// already depends on buzz-cli (for its provider clients:
-/// `buzz_cli::providers::{Groq,Anthropic,...}Provider`), so buzz-cli
+/// `buzz_cli::providers::{Groq,Gemini,...}Provider`), so buzz-cli
 /// depending back on buzz-gateway would be a circular crate dependency.
 /// Shelling out to the sibling binary is the straightforward way around
 /// that without restructuring either crate.
@@ -483,12 +467,6 @@ fn run_setup_wizard() -> Result<(), Box<dyn Error>> {
     std::io::stdin().read_line(&mut input)?;
     config.providers.groq = input.trim().to_string();
 
-    print!("Anthropic API key (Enter to skip): ");
-    input.clear();
-    std::io::stdout().flush()?;
-    std::io::stdin().read_line(&mut input)?;
-    config.providers.anthropic = input.trim().to_string();
-
     print!("Gemini API key (Enter to skip): ");
     input.clear();
     std::io::stdout().flush()?;
@@ -578,10 +556,10 @@ async fn run_smart_cli(prompt: &str, show_routing: bool) -> Result<(), Box<dyn E
 
     match result {
         Ok((resp, reservation)) => {
-            // Providers that stream (local always; Groq/Anthropic/Gemini as
-            // of this session) already printed their content incrementally
-            // via on_token — printing resp.content here too would duplicate
-            // it. Only providers that don't stream (currently HuggingFace)
+            // Providers that stream (local always; Groq/Gemini as of this
+            // session) already printed their content incrementally via
+            // on_token — printing resp.content here too would duplicate it.
+            // Only providers that don't stream (currently HuggingFace)
             // need it printed after the fact.
             if !streamed_anything {
                 println!("{}", resp.content);
@@ -698,13 +676,13 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
         if input == "/settings" || input == "/setup" {
             let cur = get_config().unwrap_or_default();
             println!(
-                "Settings — groq: {} | anthropic: {} | gemini: {} | hf: {} | model: {} | daily budget: ${:.2} | max per-request: ${:.2}",
-                mask_secret(&cur.providers.groq), mask_secret(&cur.providers.anthropic),
+                "Settings — groq: {} | gemini: {} | hf: {} | model: {} | daily budget: ${:.2} | max per-request: ${:.2}",
+                mask_secret(&cur.providers.groq),
                 mask_secret(&cur.providers.gemini), mask_secret(&cur.providers.hf),
                 cur.local.model_path, cur.cost.daily_budget_usd, cur.cost.max_per_request_usd
             );
             println!(
-                "Change with: /settings <groq|anthropic|gemini|hf|model|budget|maxrequest> <value>\n"
+                "Change with: /settings <groq|gemini|hf|model|budget|maxrequest> <value>\n"
             );
             continue;
         }
@@ -712,7 +690,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
             let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
             if parts.len() < 2 {
                 println!(
-                    "Usage: /settings <groq|anthropic|gemini|hf|model|budget|maxrequest> <value>\n"
+                    "Usage: /settings <groq|gemini|hf|model|budget|maxrequest> <value>\n"
                 );
                 continue;
             }
@@ -723,10 +701,6 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 "groq" => {
                     cur.providers.groq = value.to_string();
                     Ok("groq key updated".to_string())
-                }
-                "anthropic" => {
-                    cur.providers.anthropic = value.to_string();
-                    Ok("anthropic key updated".to_string())
                 }
                 "gemini" => {
                     cur.providers.gemini = value.to_string();
@@ -755,7 +729,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     Err(_) => Err(format!("invalid value: {value}")),
                 },
                 other => Err(format!(
-                    "Unknown setting: {other}. Use groq|anthropic|gemini|hf|model|budget|maxrequest"
+                    "Unknown setting: {other}. Use groq|gemini|hf|model|budget|maxrequest"
                 )),
             };
             match result {
@@ -787,7 +761,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     println!(
                         "{}\n",
                         theme::yellow(&format!(
-                            "Unknown provider: {rest}. Use groq|anthropic|gemini|hf|local"
+                            "Unknown provider: {rest}. Use groq|gemini|hf|local"
                         ))
                     )
                 }
@@ -861,14 +835,10 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 "2" => {
                     println!("  1. groq        — {}", mask_secret(&config.providers.groq));
                     println!(
-                        "  2. anthropic   — {}",
-                        mask_secret(&config.providers.anthropic)
-                    );
-                    println!(
-                        "  3. gemini      — {}",
+                        "  2. gemini      — {}",
                         mask_secret(&config.providers.gemini)
                     );
-                    println!("  4. huggingface — {}", mask_secret(&config.providers.hf));
+                    println!("  3. huggingface — {}", mask_secret(&config.providers.hf));
                     print!("{} ", theme::cyan(">"));
                     std::io::stdout().flush()?;
                     let mut pick = String::new();
@@ -877,9 +847,8 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     }
                     let picked = match pick.trim() {
                         "1" => Some("groq"),
-                        "2" => Some("anthropic"),
-                        "3" => Some("gemini"),
-                        "4" => Some("huggingface"),
+                        "2" => Some("gemini"),
+                        "3" => Some("huggingface"),
                         _ => None,
                     };
                     match picked {
@@ -893,21 +862,18 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     }
                 }
                 "3" => {
-                    print!("Provider to add a key for (groq|anthropic|gemini|hf): ");
+                    print!("Provider to add a key for (groq|gemini|hf): ");
                     std::io::stdout().flush()?;
                     let mut name = String::new();
                     if std::io::stdin().read_line(&mut name)? == 0 {
                         continue;
                     }
                     let name = name.trim().to_lowercase();
-                    if !matches!(
-                        name.as_str(),
-                        "groq" | "anthropic" | "gemini" | "hf" | "huggingface"
-                    ) {
+                    if !matches!(name.as_str(), "groq" | "gemini" | "hf" | "huggingface") {
                         println!(
                             "{}\n",
                             theme::yellow(&format!(
-                                "Unknown provider: {name}. Use groq|anthropic|gemini|hf"
+                                "Unknown provider: {name}. Use groq|gemini|hf"
                             ))
                         );
                         continue;
@@ -922,7 +888,6 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     let mut cur = get_config().unwrap_or_default();
                     match name.as_str() {
                         "groq" => cur.providers.groq = key,
-                        "anthropic" => cur.providers.anthropic = key,
                         "gemini" => cur.providers.gemini = key,
                         _ => cur.providers.hf = key,
                     }
@@ -994,11 +959,11 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
 
         match result {
             Ok((resp, reservation)) => {
-                // Providers that stream (local always; Groq/Anthropic/Gemini
-                // as of this session) already printed their content
-                // incrementally via on_token — printing resp.content here
-                // too would duplicate it. Only providers that don't stream
-                // (currently HuggingFace) need it printed after the fact.
+                // Providers that stream (local always; Groq/Gemini as of
+                // this session) already printed their content incrementally
+                // via on_token — printing resp.content here too would
+                // duplicate it. Only providers that don't stream (currently
+                // HuggingFace) need it printed after the fact.
                 if !streamed_anything {
                     println!("{}", sanitize_terminal_text(&resp.content));
                 }
@@ -1255,7 +1220,7 @@ mod tests {
 
     #[test]
     fn require_key_rejects_whitespace_only() {
-        assert!(require_key("   ", "anthropic_api_key").is_err());
+        assert!(require_key("   ", "gemini_api_key").is_err());
     }
 
     #[test]
@@ -1284,8 +1249,8 @@ mod tests {
 
     #[test]
     fn select_provider_name_uses_override_when_present() {
-        let picked = select_provider_name(&Some("Anthropic".to_string()));
-        assert_eq!(picked, "anthropic");
+        let picked = select_provider_name(&Some("Gemini".to_string()));
+        assert_eq!(picked, "gemini");
     }
 
     #[test]

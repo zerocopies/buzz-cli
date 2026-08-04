@@ -172,16 +172,6 @@ async fn dispatch(
                 .await
                 .map_err(|e| e.to_string())
         }
-        RouteTarget::Anthropic => {
-            let key = state.config.providers.anthropic.trim();
-            if key.is_empty() {
-                return Err("no anthropic_api_key configured".to_string());
-            }
-            buzz_cli::providers::AnthropicProvider::new(key.to_string(), None)
-                .generate(prompt, &mut on_token)
-                .await
-                .map_err(|e| e.to_string())
-        }
         RouteTarget::Gemini => {
             let key = state.config.providers.gemini.trim();
             if key.is_empty() {
@@ -208,8 +198,8 @@ async fn dispatch(
         }
         // decide_route never actually produces this — buzz-core's
         // RouteProvider has no OpenAI variant, so routing.rs's mapping
-        // only ever constructs Local/Groq/Anthropic. Fail closed rather
-        // than silently doing nothing if that ever changes.
+        // only ever constructs Local/Groq/Gemini/HuggingFace. Fail closed
+        // rather than silently doing nothing if that ever changes.
         RouteTarget::OpenAi => Err("openai routing target has no provider client wired".into()),
     }
 }

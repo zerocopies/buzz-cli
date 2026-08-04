@@ -37,8 +37,8 @@ fn feed(buf: &mut String, bytes: &[u8]) -> Vec<SseLine> {
 /// Reads a Server-Sent-Events response body, calling `on_data` with each
 /// event's payload (the text after `data: `). Stops early if `on_data`
 /// returns `false`, or on the OpenAI-style `[DONE]` sentinel (used by
-/// Groq); vendors that don't send that sentinel (Anthropic, Gemini) just
-/// end the stream naturally when the body closes.
+/// Groq); vendors that don't send that sentinel (Gemini) just end the
+/// stream naturally when the body closes.
 pub async fn for_each_sse_data(
     response: Response,
     mut on_data: impl FnMut(&str) -> bool,

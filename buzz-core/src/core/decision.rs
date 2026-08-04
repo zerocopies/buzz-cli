@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 pub enum RouteProvider {
     Local,
     Groq,
-    Anthropic,
     Gemini,
     HuggingFace,
 }
@@ -16,7 +15,6 @@ impl RouteProvider {
         match self {
             RouteProvider::Local => "local",
             RouteProvider::Groq => "groq",
-            RouteProvider::Anthropic => "anthropic",
             RouteProvider::Gemini => "gemini",
             RouteProvider::HuggingFace => "huggingface",
         }
@@ -42,7 +40,6 @@ impl std::str::FromStr for RouteProvider {
         match s {
             "local" => Ok(RouteProvider::Local),
             "groq" => Ok(RouteProvider::Groq),
-            "anthropic" => Ok(RouteProvider::Anthropic),
             "gemini" => Ok(RouteProvider::Gemini),
             "huggingface" | "hf" => Ok(RouteProvider::HuggingFace),
             other => Err(UnknownProvider(other.to_string())),
@@ -84,7 +81,6 @@ pub fn decide_route(prompt: &str, config: &RoutingConfig) -> Route {
     if complexity >= 6 && !config.cloud_fallback_order.is_empty() {
         let first = &config.cloud_fallback_order[0];
         let provider = match first.to_lowercase().as_str() {
-            "anthropic" => RouteProvider::Anthropic,
             "gemini" => RouteProvider::Gemini,
             "huggingface" | "hf" => RouteProvider::HuggingFace,
             _ => RouteProvider::Groq,
@@ -231,7 +227,7 @@ mod tests {
 
     #[test]
     fn sensitive_content_always_routes_local_even_if_complex() {
-        let cfg = config(&["anthropic"]);
+        let cfg = config(&["gemini"]);
         let complex_but_sensitive = format!(
             "{} my ssn is 123-45-6789, please explain and analyze the architecture tradeoffs",
             "implement refactor optimize debug algorithm database ".repeat(20)
@@ -249,10 +245,6 @@ mod tests {
         );
         assert!(analyze_complexity(&complex) >= 6);
 
-        assert_eq!(
-            decide_route(&complex, &config(&["anthropic"])).provider,
-            RouteProvider::Anthropic
-        );
         assert_eq!(
             decide_route(&complex, &config(&["gemini"])).provider,
             RouteProvider::Gemini
@@ -272,7 +264,6 @@ mod tests {
         for p in [
             RouteProvider::Local,
             RouteProvider::Groq,
-            RouteProvider::Anthropic,
             RouteProvider::Gemini,
             RouteProvider::HuggingFace,
         ] {

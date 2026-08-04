@@ -232,9 +232,9 @@ mod tests {
             },
             "/nonexistent.jsonl",
         );
-        let estimated = estimate_cost("hello", RouteProvider::Anthropic);
+        let estimated = estimate_cost("hello", RouteProvider::Gemini);
         assert!(estimated > 0.0);
-        let result = check(&cfg, RouteProvider::Anthropic, estimated);
+        let result = check(&cfg, RouteProvider::Gemini, estimated);
         assert!(matches!(result, BudgetCheck::ExceedsPerRequest { .. }));
     }
 

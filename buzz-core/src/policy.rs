@@ -5,8 +5,6 @@ pub struct Providers {
     #[serde(default)]
     pub groq: String,
     #[serde(default)]
-    pub anthropic: String,
-    #[serde(default)]
     pub gemini: String,
     #[serde(default)]
     pub hf: String,

@@ -21,7 +21,6 @@ use crate::openai_types::ChatMessage;
 pub enum RouteTarget {
     Local,
     Groq,
-    Anthropic,
     Gemini,
     HuggingFace,
     OpenAi,
@@ -32,7 +31,6 @@ impl RouteTarget {
         match self {
             RouteTarget::Local => "local",
             RouteTarget::Groq => "groq",
-            RouteTarget::Anthropic => "anthropic",
             RouteTarget::Gemini => "gemini",
             RouteTarget::HuggingFace => "huggingface",
             RouteTarget::OpenAi => "openai",
@@ -108,8 +106,8 @@ pub trait RouteDecider: Send + Sync {
 /// so sensitivity scanning sees the whole conversation, not just the
 /// latest turn.
 ///
-/// `RouteProvider` (buzz-core) has 5 variants; `RouteTarget` (this crate)
-/// mirrors all 5 (`OpenAi` aside — buzz-core has no such provider, so
+/// `RouteProvider` (buzz-core) has 4 variants; `RouteTarget` (this crate)
+/// mirrors all 4 (`OpenAi` aside — buzz-core has no such provider, so
 /// `decide_route` can never produce it; the variant is dead, kept only
 /// because `dispatch` in handlers.rs still matches on it defensively).
 /// `Gemini`/`HuggingFace` dispatch through the same buzz-cli provider
@@ -165,7 +163,6 @@ pub fn validate_config(config: &buzz_core::policy::Config) {
         // today, so that's the only key worth validating here.
         Some(first) => {
             let (name, key) = match first.to_lowercase().as_str() {
-                "anthropic" => ("anthropic", &config.providers.anthropic),
                 "gemini" => ("gemini", &config.providers.gemini),
                 "huggingface" | "hf" => ("huggingface", &config.providers.hf),
                 _ => ("groq", &config.providers.groq),
@@ -228,7 +225,6 @@ impl RouteDecider for RealRouter {
         let target = match route.provider {
             buzz_core::RouteProvider::Local => RouteTarget::Local,
             buzz_core::RouteProvider::Groq => RouteTarget::Groq,
-            buzz_core::RouteProvider::Anthropic => RouteTarget::Anthropic,
             buzz_core::RouteProvider::Gemini => RouteTarget::Gemini,
             buzz_core::RouteProvider::HuggingFace => RouteTarget::HuggingFace,
         };
