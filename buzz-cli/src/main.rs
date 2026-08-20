@@ -681,17 +681,13 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 mask_secret(&cur.providers.gemini), mask_secret(&cur.providers.hf),
                 cur.local.model_path, cur.cost.daily_budget_usd, cur.cost.max_per_request_usd
             );
-            println!(
-                "Change with: /settings <groq|gemini|hf|model|budget|maxrequest> <value>\n"
-            );
+            println!("Change with: /settings <groq|gemini|hf|model|budget|maxrequest> <value>\n");
             continue;
         }
         if let Some(rest) = input.strip_prefix("/settings ") {
             let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
             if parts.len() < 2 {
-                println!(
-                    "Usage: /settings <groq|gemini|hf|model|budget|maxrequest> <value>\n"
-                );
+                println!("Usage: /settings <groq|gemini|hf|model|budget|maxrequest> <value>\n");
                 continue;
             }
             let key = parts[0].to_lowercase();
@@ -872,9 +868,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     if !matches!(name.as_str(), "groq" | "gemini" | "hf" | "huggingface") {
                         println!(
                             "{}\n",
-                            theme::yellow(&format!(
-                                "Unknown provider: {name}. Use groq|gemini|hf"
-                            ))
+                            theme::yellow(&format!("Unknown provider: {name}. Use groq|gemini|hf"))
                         );
                         continue;
                     }

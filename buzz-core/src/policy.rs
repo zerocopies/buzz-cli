@@ -26,6 +26,22 @@ impl RoutingConfig {
     fn default_cloud_fallback_order() -> Vec<String> {
         vec!["groq".to_string()]
     }
+
+    fn normalize_cloud_fallback_order(&mut self) {
+        let mut normalized = Vec::new();
+        for raw in std::mem::take(&mut self.cloud_fallback_order) {
+            let canonical = match raw.trim().to_lowercase().as_str() {
+                "groq" => "groq",
+                "gemini" => "gemini",
+                "huggingface" | "hf" => "huggingface",
+                _ => continue,
+            };
+            if !normalized.iter().any(|entry| entry == canonical) {
+                normalized.push(canonical.to_string());
+            }
+        }
+        self.cloud_fallback_order = normalized;
+    }
 }
 
 impl Default for RoutingConfig {
@@ -142,14 +158,18 @@ pub struct Config {
 impl Config {
     pub fn load_from_file(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&content)?)
+        let mut config: Self = toml::from_str(&content)?;
+        config.routing.normalize_cloud_fallback_order();
+        Ok(config)
     }
 
     pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string(self)?;
+        let mut normalized = self.clone();
+        normalized.routing.normalize_cloud_fallback_order();
+        let content = toml::to_string(&normalized)?;
         std::fs::write(path, content)?;
         #[cfg(unix)]
         {
@@ -221,6 +241,37 @@ mod tests {
             loaded.local.max_context_size,
             LocalConfig::default_max_context_size()
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn unsupported_provider_entries_are_ignored_when_loading_and_saving() {
+        let raw = r#"
+[providers]
+legacy = "sk-old"
+gemini = "sk-new"
+
+[routing]
+cloud_fallback_order = ["legacy", "gemini", "hf", "gemini"]
+"#;
+        let path = std::env::temp_dir().join(format!(
+            "buzz-config-sanitize-test-{:?}.toml",
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, raw).unwrap();
+
+        let loaded = Config::load_from_file(&path).expect("config should load");
+        assert_eq!(loaded.providers.gemini, "sk-new");
+        assert_eq!(
+            loaded.routing.cloud_fallback_order,
+            vec!["gemini".to_string(), "huggingface".to_string()]
+        );
+
+        loaded.save_to_file(&path).expect("config should save");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("legacy"));
+        assert!(!saved.contains("\"hf\""));
 
         let _ = std::fs::remove_file(&path);
     }
