@@ -47,6 +47,17 @@ impl std::str::FromStr for RouteProvider {
     }
 }
 
+fn first_supported_cloud_fallback(fallback_order: &[String]) -> Option<RouteProvider> {
+    fallback_order
+        .iter()
+        .find_map(|raw| match raw.trim().to_lowercase().as_str() {
+            "groq" => Some(RouteProvider::Groq),
+            "gemini" => Some(RouteProvider::Gemini),
+            "huggingface" | "hf" => Some(RouteProvider::HuggingFace),
+            _ => None,
+        })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
     pub provider: RouteProvider,
@@ -78,20 +89,23 @@ pub fn decide_route(prompt: &str, config: &RoutingConfig) -> Route {
     }
 
     // Complex code/reasoning → cloud
-    if complexity >= 6 && !config.cloud_fallback_order.is_empty() {
-        let first = &config.cloud_fallback_order[0];
-        let provider = match first.to_lowercase().as_str() {
-            "gemini" => RouteProvider::Gemini,
-            "huggingface" | "hf" => RouteProvider::HuggingFace,
-            _ => RouteProvider::Groq,
-        };
-
+    if complexity >= 6 {
+        if let Some(provider) = first_supported_cloud_fallback(&config.cloud_fallback_order) {
+            return Route {
+                provider,
+                reason: format!(
+                    "complex task (complexity={}), using {}",
+                    complexity,
+                    provider.as_str()
+                ),
+                confidence: 0.90,
+            };
+        }
         return Route {
-            provider,
+            provider: RouteProvider::Local,
             reason: format!(
-                "complex task (complexity={}), using {}",
-                complexity,
-                provider.as_str()
+                "complex task (complexity={}), no supported cloud provider configured",
+                complexity
             ),
             confidence: 0.90,
         };
@@ -281,6 +295,16 @@ mod tests {
         );
         let route = decide_route(&complex, &config(&[]));
         assert_eq!(route.provider, RouteProvider::Local);
+    }
+
+    #[test]
+    fn complex_prompt_skips_unsupported_fallback_entries() {
+        let complex = format!(
+            "{} please explain and analyze the architecture tradeoffs and design",
+            "implement refactor optimize debug algorithm database ".repeat(20)
+        );
+        let route = decide_route(&complex, &config(&["legacy", "gemini"]));
+        assert_eq!(route.provider, RouteProvider::Gemini);
     }
 }
 
