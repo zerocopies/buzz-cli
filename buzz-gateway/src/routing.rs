@@ -23,6 +23,7 @@ pub enum RouteTarget {
     Groq,
     Gemini,
     HuggingFace,
+    BazaarLink,
     OpenAi,
 }
 
@@ -33,6 +34,7 @@ impl RouteTarget {
             RouteTarget::Groq => "groq",
             RouteTarget::Gemini => "gemini",
             RouteTarget::HuggingFace => "huggingface",
+            RouteTarget::BazaarLink => "bazaarlink",
             RouteTarget::OpenAi => "openai",
         }
     }
@@ -106,8 +108,8 @@ pub trait RouteDecider: Send + Sync {
 /// so sensitivity scanning sees the whole conversation, not just the
 /// latest turn.
 ///
-/// `RouteProvider` (buzz-core) has 4 variants; `RouteTarget` (this crate)
-/// mirrors all 4 (`OpenAi` aside — buzz-core has no such provider, so
+/// `RouteProvider` (buzz-core) has 5 variants; `RouteTarget` (this crate)
+/// mirrors all 5 (`OpenAi` aside — buzz-core has no such provider, so
 /// `decide_route` can never produce it; the variant is dead, kept only
 /// because `dispatch` in handlers.rs still matches on it defensively).
 /// `Gemini`/`HuggingFace` dispatch through the same buzz-cli provider
@@ -227,6 +229,7 @@ impl RouteDecider for RealRouter {
             buzz_core::RouteProvider::Groq => RouteTarget::Groq,
             buzz_core::RouteProvider::Gemini => RouteTarget::Gemini,
             buzz_core::RouteProvider::HuggingFace => RouteTarget::HuggingFace,
+            buzz_core::RouteProvider::BazaarLink => RouteTarget::BazaarLink,
         };
 
         let estimated_cost = buzz_core::budget::estimate_cost(&prompt, route.provider);

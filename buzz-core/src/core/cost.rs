@@ -21,6 +21,10 @@ pub fn get_pricing(provider: RouteProvider) -> ProviderPricing {
             input_per_token: 0.00000025,
             output_per_token: 0.00000050,
         },
+        RouteProvider::BazaarLink => ProviderPricing {
+            input_per_token: 0.0, // TODO: placeholder, auto:free default — revisit if a paid model is passed in
+            output_per_token: 0.0, // TODO: placeholder
+        },
         RouteProvider::HuggingFace => ProviderPricing {
             input_per_token: 0.0,
             output_per_token: 0.0,

@@ -8,6 +8,7 @@ pub enum RouteProvider {
     Groq,
     Gemini,
     HuggingFace,
+    BazaarLink,
 }
 
 impl RouteProvider {
@@ -17,6 +18,7 @@ impl RouteProvider {
             RouteProvider::Groq => "groq",
             RouteProvider::Gemini => "gemini",
             RouteProvider::HuggingFace => "huggingface",
+            RouteProvider::BazaarLink => "bazaarlink",
         }
     }
 }
@@ -193,6 +195,7 @@ mod tests {
 
     fn config(fallback: &[&str]) -> RoutingConfig {
         RoutingConfig {
+            smart_routing: false,
             always_local_if_sensitive: true,
             cloud_fallback_order: fallback.iter().map(|s| s.to_string()).collect(),
         }

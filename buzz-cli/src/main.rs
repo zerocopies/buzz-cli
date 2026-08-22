@@ -1,11 +1,12 @@
+mod banner;
 mod theme;
 
-use buzz_core::policy::Config;
+use buzz_core::{policy::Config, select_model_with_task, record_routing_outcome};
 use clap::Parser;
 use std::error::Error;
 use std::io::Write;
 
-use buzz_cli::providers::{GeminiProvider, GroqProvider, HuggingFaceProvider, LocalProvider};
+use buzz_cli::providers::{BazaarLinkProvider, GeminiProvider, GroqProvider, HuggingFaceProvider, LocalProvider};
 use buzz_core::{decide_route, scan_text, InferenceProvider, ProviderResponse, RouteProvider};
 
 /// `caller` value for every audit entry buzz-cli itself writes — as
@@ -185,10 +186,25 @@ async fn dispatch_provider(
                 }
             }
         }
+
         "huggingface" | "hf" => {
             let key = require_key(&config.providers.hf, "hf_api_key")?;
             let reservation = reserve_budget(config, RouteProvider::HuggingFace, prompt)?;
             match HuggingFaceProvider::new(key.to_string(), None)
+                .generate(prompt, &mut on_token)
+                .await
+            {
+                Ok(resp) => Ok((resp, reservation)),
+                Err(e) => {
+                    buzz_core::budget::release(reservation);
+                    Err(e)
+                }
+            }
+        }
+        "bazaarlink" | "bz" => {
+            let key = require_key(&config.providers.bazaarlink, "bazaarlink_api_key")?;
+            let reservation = reserve_budget(config, RouteProvider::BazaarLink, prompt)?;
+            match BazaarLinkProvider::new(key.to_string(), None)
                 .generate(prompt, &mut on_token)
                 .await
             {
@@ -284,6 +300,7 @@ fn sanitize_terminal_text(s: &str) -> String {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    banner::print_banner();
     let cli = Cli::parse();
 
     match cli.command {
@@ -845,6 +862,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                         "1" => Some("groq"),
                         "2" => Some("gemini"),
                         "3" => Some("huggingface"),
+                        "4" => Some("bazarlink"),
                         _ => None,
                     };
                     match picked {
@@ -907,6 +925,8 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
             println!("({cached_tokens} tokens · $0.000000 this reply — served from cache · {total_tokens} tokens · ${total_spend:.6} total)\n");
             continue;
         }
+        // Task classification and smart routing decision
+        let route_v2 = select_model_with_task(&input, config.routing.smart_routing);
 
         let (provider, route_reason, is_override) = if let Some(p) = provider_override.take() {
             let r = format!("manual override: /provider {p}");
@@ -927,6 +947,8 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
         // An explicit /provider override gets exactly that provider (or a
         // clear error) — never a silent substitute. Auto-routing gets the
         // full fallback chain.
+        // Track timing for adaptive routing metrics
+        let start = std::time::Instant::now();
         let (served_by, result) = if is_override {
             let r = rt_handle.block_on(dispatch_provider(
                 &provider, &input, &config, &mut local, on_token,
@@ -942,6 +964,13 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 on_token,
             ))
         };
+        let latency_ms = start.elapsed().as_millis() as u64;
+        
+        // Record outcome for future routing decisions (only for auto-routed requests)
+        if !is_override {
+            record_routing_outcome(&route_v2.model_name, result.is_ok(), latency_ms);
+        }
+
         if served_by != provider {
             println!(
                 "\n{}",

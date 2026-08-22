@@ -196,10 +196,20 @@ async fn dispatch(
                 .await
                 .map_err(|e| e.to_string())
         }
+        RouteTarget::BazaarLink => {
+            let key = state.config.providers.bazaarlink.trim();
+            if key.is_empty() {
+                return Err("no bazaarlink_api_key configured".to_string());
+            }
+            buzz_cli::providers::BazaarLinkProvider::new(key.to_string(), None)
+                .generate(prompt, &mut on_token)
+                .await
+                .map_err(|e| e.to_string())
+        }
         // decide_route never actually produces this — buzz-core's
         // RouteProvider has no OpenAI variant, so routing.rs's mapping
-        // only ever constructs Local/Groq/Gemini/HuggingFace. Fail closed
-        // rather than silently doing nothing if that ever changes.
+        // only ever constructs Local/Groq/Gemini/HuggingFace/BazaarLink.
+        // Fail closed rather than silently doing nothing if that ever changes.
         RouteTarget::OpenAi => Err("openai routing target has no provider client wired".into()),
     }
 }

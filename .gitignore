@@ -1,5 +1,4 @@
 /target
-Cargo.lock
 
 # Local build artifacts / packaging output
 buzz-gateway.tar
@@ -9,3 +8,8 @@ buzz-gateway/dist/buzz-gateway-*/
 # Editor/OS cruft (harmless but standard to exclude)
 .DS_Store
 *.swp
+
+# Editor/debug backup files
+*.bak*
+*.backup
+*.old
