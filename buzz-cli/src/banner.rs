@@ -5,47 +5,67 @@ pub fn print_banner() {
     let reset  = "\x1b[0m";
     let bold   = "\x1b[1m";
 
-    let body_widths: [usize; 9] = [6, 10, 14, 18, 20, 18, 14, 10, 6];
-    let field_width = 20usize;
-
-    // (black, white, white, black) columns per stripe, head-band -> mid-band -> tail-band
-    let bands: [(usize, usize, usize, usize); 3] = [
-        (3, 4, 5, 6),
-        (8, 9, 10, 11),
-        (13, 14, 15, 16),
+    let body_rows: [(usize, usize); 9] = [
+        (6, 17),
+        (4, 19),
+        (2, 21),
+        (1, 22),
+        (0, 22),
+        (1, 22),
+        (2, 21),
+        (4, 19),
+        (6, 17),
     ];
 
-    let tail_widths: [usize; 7] = [2, 4, 6, 8, 6, 4, 2];
+    let tail_rows: [Option<(usize, usize)>; 9] = [
+        None, None, None,
+        Some((24, 26)),
+        Some((24, 27)),
+        Some((24, 26)),
+        None, None, None,
+    ];
 
-    for (row, &width) in body_widths.iter().enumerate() {
-        let pad = (field_width - width) / 2;
+    let stripes: [(usize, usize, usize, usize); 3] = [
+        (4, 5, 6, 7),
+        (11, 12, 13, 14),
+        (17, 18, 19, 20),
+    ];
+
+    let eye = (2usize, 3usize);
+
+    for row in 0..9 {
+        let (start, end) = body_rows[row];
+        let tail = tail_rows[row];
+        let max_col = end.max(tail.map(|(_, e)| e).unwrap_or(0));
         let mut line = String::new();
-        line.push_str(&" ".repeat(pad));
 
-        for col in pad..(pad + width) {
-            let mut ch_color = orange;
-            for &(b, w1, w2, blk2) in bands.iter() {
-                if col == b || col == blk2 {
-                    ch_color = black;
-                } else if col == w1 || col == w2 {
-                    ch_color = white;
+        for col in 0..=max_col {
+            let in_body = col >= start && col <= end;
+            let in_tail = tail.map_or(false, |(s, e)| col >= s && col <= e);
+
+            if !in_body && !in_tail {
+                line.push(' ');
+                continue;
+            }
+
+            let mut color = orange;
+            if in_body {
+                if (row, col) == eye {
+                    color = black;
+                } else {
+                    for &(b1, w1, w2, b2) in stripes.iter() {
+                        if col == b1 || col == b2 {
+                            color = black;
+                        } else if col == w1 || col == w2 {
+                            color = white;
+                        }
+                    }
                 }
             }
-            if row == 3 && col == pad {
-                ch_color = black; // eye
-            }
-            line.push_str(ch_color);
+            line.push_str(color);
             line.push('█');
             line.push_str(reset);
         }
-
-        if (1..=7).contains(&row) {
-            let t_width = tail_widths[row - 1];
-            line.push_str(orange);
-            line.push_str(&"█".repeat(t_width));
-            line.push_str(reset);
-        }
-
         println!("{line}");
     }
 
