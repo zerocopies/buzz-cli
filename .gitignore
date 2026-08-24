@@ -13,3 +13,4 @@ buzz-gateway/dist/buzz-gateway-*/
 *.bak*
 *.backup
 *.old
+*.pre_*

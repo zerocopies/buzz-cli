@@ -44,6 +44,7 @@ impl std::str::FromStr for RouteProvider {
             "groq" => Ok(RouteProvider::Groq),
             "gemini" => Ok(RouteProvider::Gemini),
             "huggingface" | "hf" => Ok(RouteProvider::HuggingFace),
+            "bazaarlink" | "bz" => Ok(RouteProvider::BazaarLink),
             other => Err(UnknownProvider(other.to_string())),
         }
     }

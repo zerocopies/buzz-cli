@@ -10,8 +10,6 @@ pub struct Providers {
     pub hf: String,
     #[serde(default)]
     pub bazaarlink: String,
-    #[serde(default)]
-    pub bazarlink: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

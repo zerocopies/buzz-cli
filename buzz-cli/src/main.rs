@@ -698,13 +698,13 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 mask_secret(&cur.providers.gemini), mask_secret(&cur.providers.hf),
                 cur.local.model_path, cur.cost.daily_budget_usd, cur.cost.max_per_request_usd
             );
-            println!("Change with: /settings <groq|gemini|hf|model|budget|maxrequest> <value>\n");
+            println!("Change with: /settings <groq|gemini|hf|bazaarlink|model|budget|maxrequest> <value>\n");
             continue;
         }
         if let Some(rest) = input.strip_prefix("/settings ") {
             let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
             if parts.len() < 2 {
-                println!("Usage: /settings <groq|gemini|hf|model|budget|maxrequest> <value>\n");
+                println!("Usage: /settings <groq|gemini|hf|bazaarlink|model|budget|maxrequest> <value>\n");
                 continue;
             }
             let key = parts[0].to_lowercase();
@@ -722,6 +722,10 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                 "hf" | "huggingface" => {
                     cur.providers.hf = value.to_string();
                     Ok("huggingface key updated".to_string())
+                }
+                "bazaarlink" | "bz" => {
+                    cur.providers.bazaarlink = value.to_string();
+                    Ok("bazaarlink key updated".to_string())
                 }
                 "model" => {
                     cur.local.model_path = value.to_string();
@@ -742,7 +746,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     Err(_) => Err(format!("invalid value: {value}")),
                 },
                 other => Err(format!(
-                    "Unknown setting: {other}. Use groq|gemini|hf|model|budget|maxrequest"
+                    "Unknown setting: {other}. Use groq|gemini|hf|bazaarlink|model|budget|maxrequest"
                 )),
             };
             match result {
@@ -774,7 +778,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     println!(
                         "{}\n",
                         theme::yellow(&format!(
-                            "Unknown provider: {rest}. Use groq|gemini|hf|local"
+                            "Unknown provider: {rest}. Use groq|gemini|hf|bazaarlink|local"
                         ))
                     )
                 }
@@ -862,7 +866,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                         "1" => Some("groq"),
                         "2" => Some("gemini"),
                         "3" => Some("huggingface"),
-                        "4" => Some("bazarlink"),
+                        "4" => Some("bazaarlink"),
                         _ => None,
                     };
                     match picked {
@@ -876,17 +880,17 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     }
                 }
                 "3" => {
-                    print!("Provider to add a key for (groq|gemini|hf): ");
+                    print!("Provider to add a key for (groq|gemini|hf|bazaarlink): ");
                     std::io::stdout().flush()?;
                     let mut name = String::new();
                     if std::io::stdin().read_line(&mut name)? == 0 {
                         continue;
                     }
                     let name = name.trim().to_lowercase();
-                    if !matches!(name.as_str(), "groq" | "gemini" | "hf" | "huggingface") {
+                    if !matches!(name.as_str(), "groq" | "gemini" | "hf" | "huggingface" | "bazaarlink" | "bz") {
                         println!(
                             "{}\n",
-                            theme::yellow(&format!("Unknown provider: {name}. Use groq|gemini|hf"))
+                            theme::yellow(&format!("Unknown provider: {name}. Use groq|gemini|hf|bazaarlink"))
                         );
                         continue;
                     }
@@ -901,6 +905,7 @@ fn run_tui_mode(_default_provider: &str, _show_routing: bool) -> Result<(), Box<
                     match name.as_str() {
                         "groq" => cur.providers.groq = key,
                         "gemini" => cur.providers.gemini = key,
+                        "bazaarlink" | "bz" => cur.providers.bazaarlink = key,
                         _ => cur.providers.hf = key,
                     }
                     match save_config(&cur) {
